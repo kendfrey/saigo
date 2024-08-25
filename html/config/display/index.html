@@ -1,0 +1,65 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<title>Saigo - Configure Display</title>
+	<link rel="stylesheet" href="index.css">
+</head>
+<body>
+	<p id="resolution">
+		Resolution:
+		<input type="number" id="image_width">
+		x
+		<input type="number" id="image_height">
+		<button data-width="640" data-height="360">360p</button>
+		<button data-width="854" data-height="480">480p</button>
+		<button data-width="1280" data-height="720">720p</button>
+		<button data-width="1920" data-height="1080">1080p</button>
+	</p>
+	<p>
+		Adjust these settings until the dots appear on the intersections
+		and the large red dot is in the upper right corner.
+		<br>
+		You can use the arrow keys for fine adjustments.
+	</p>
+	<div>
+		<label for="angle"><img src="angle.png" alt="Angle"></label>
+		<input type="range" id="angle" min="-180" max="180" step="0.2" list="angles">
+	</div>
+	<div>
+		<label for="x"><img src="x.png" alt="X"></label>
+		<input type="range" id="x" min="-1" max="1" step="0.002" list="zero">
+	</div>
+	<div>
+		<label for="y"><img src="y.png" alt="Y"></label>
+		<input type="range" id="y" min="-1" max="1" step="0.002" list="zero">
+	</div>
+	<div>
+		<label for="width"><img src="width.png" alt="Width"></label>
+		<input type="range" id="width" min="0.1" max="1.1" step="0.005">
+	</div>
+	<div>
+		<label for="height"><img src="height.png" alt="Height"></label>
+		<input type="range" id="height" min="0.1" max="1.1" step="0.005">
+	</div>
+	<div>
+		<label for="perspective_x"><img src="perspective_x.png" alt="Perspective X"></label>
+		<input type="range" id="perspective_x" min="-1" max="1" step="0.005" list="zero">
+	</div>
+	<div>
+		<label for="perspective_y"><img src="perspective_y.png" alt="Perspective Y"></label>
+		<input type="range" id="perspective_y" min="-1" max="1" step="0.005" list="zero">
+	</div>
+	<datalist id="zero">
+		<option value="0">
+	</datalist>
+	<datalist id="angles">
+		<option value="-180">
+		<option value="-90">
+		<option value="0">
+		<option value="90">
+		<option value="180">
+	</datalist>
+	<script src="index.js"></script>
+</body>
+</html>

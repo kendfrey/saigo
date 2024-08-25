@@ -3,6 +3,11 @@ body
 	font-family: Arial, sans-serif;
 }
 
+#resolution > input
+{
+	width: 50px;
+}
+
 input[type="range"]
 {
 	width: 500px;

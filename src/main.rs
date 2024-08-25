@@ -1,13 +1,16 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    future::Future,
+    sync::{Arc, RwLock},
+};
 
-use app::{AppState, DisplayCalibration};
+use app::{config::DisplayConfig, AppState};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
         State, WebSocketUpgrade,
     },
     response::IntoResponse,
-    routing::{get, put},
+    routing::{get, MethodRouter},
     Json, Router,
 };
 use tokio::net::TcpListener;
@@ -20,19 +23,15 @@ async fn main() {
     let state = AppState::start();
     let app = Router::new()
         .nest_service("/", ServeDir::new("html"))
-        .route("/ws/display", get(websocket_display_handler))
-        .route("/api/calibrate/display", put(calibrate_display))
+        .route("/ws/display", websocket(websocket_display))
+        .route(
+            "/api/config/display",
+            get(get_config_display).put(put_config_display),
+        )
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:5410").await.unwrap();
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn websocket_display_handler(
-    State(state): State<Arc<RwLock<AppState>>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| websocket_display(state, socket))
 }
 
 /// Watches for display updates and sends them to the client.
@@ -46,9 +45,12 @@ async fn websocket_display(state: Arc<RwLock<AppState>>, mut socket: WebSocket) 
         match receiver.changed().await {
             Ok(()) => {
                 // If a new frame is available, send it to the client
-                let image_data = receiver.borrow_and_update().clone();
-                let msg = Message::Binary(image_data);
-                match socket.send(msg).await {
+                let (width, height, image_data) = receiver.borrow_and_update().clone();
+                let mut data = vec![];
+                data.extend(width.to_be_bytes()); // The first 4 bytes are the width
+                data.extend(height.to_be_bytes()); // The next 4 bytes are the height
+                data.extend(image_data); // The rest is the image data
+                match socket.send(Message::Binary(data)).await {
                     Ok(()) => {}
                     Err(_) => {
                         // If the message fails to send, close the socket
@@ -64,12 +66,29 @@ async fn websocket_display(state: Arc<RwLock<AppState>>, mut socket: WebSocket) 
     }
 }
 
-/// Updates the display calibration settings.
-async fn calibrate_display(
+/// Gets the current display configuration.
+async fn get_config_display(State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+    Json(state.read().unwrap().get_display_config())
+}
+
+/// Updates the display configuration.
+async fn put_config_display(
     State(state): State<Arc<RwLock<AppState>>>,
-    Json(calibration): Json<DisplayCalibration>,
+    Json(display): Json<DisplayConfig>,
 ) -> impl IntoResponse {
-    let mut state = state.write().unwrap();
-    state.set_display_calibration(calibration);
-    "OK"
+    state.write().unwrap().set_display_config(display);
+}
+
+/// Helper function for creating a WebSocket route.
+fn websocket<Fut>(
+    handler: impl Fn(Arc<RwLock<AppState>>, WebSocket) -> Fut + Clone + Send + 'static,
+) -> MethodRouter<Arc<RwLock<AppState>>>
+where
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    get(
+        |State(state): State<Arc<RwLock<AppState>>>, ws: WebSocketUpgrade| async {
+            ws.on_upgrade(move |socket| handler(state, socket))
+        },
+    )
 }
