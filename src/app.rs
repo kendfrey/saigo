@@ -1,47 +1,65 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
-use config::{Config, DisplayConfig};
-use image::{ImageBuffer, Rgba, RgbaImage};
+use config::{CameraConfig, Config, DisplayConfig};
+use image::{RgbImage, Rgba, RgbaImage};
 use imageproc::{
     drawing::draw_filled_circle_mut,
     geometric_transformations::{warp, Interpolation, Projection},
 };
-use tokio::sync::watch;
+use nokhwa::{
+    pixel_format::RgbFormat,
+    utils::{ApiBackend, CameraFormat, RequestedFormat, RequestedFormatType, Resolution},
+    Camera,
+};
+use tokio::{
+    sync::watch,
+    time::{self, MissedTickBehavior},
+};
 
 pub mod config;
 
 /// The global state of the application.
 pub struct AppState {
     config: Config,
-    frame_ready: watch::Sender<()>,
-    image_broadcast: watch::Sender<(u32, u32, Vec<u8>)>,
+    display_dirty: watch::Sender<()>,
+    display_broadcast: watch::Sender<RgbaImage>,
+    camera_broadcast: watch::Sender<RgbImage>,
 }
 
 impl AppState {
     /// Starts a new instance of the application.
     pub fn start() -> Arc<RwLock<Self>> {
-        let config = Config::default();
-        let blank_frame = RgbaImage::new(config.display.image_width, config.display.image_height);
-        let (frame_ready, _) = watch::channel(());
-        let (image_broadcast, _) = watch::channel(get_frame(blank_frame));
+        let (display_dirty, _) = watch::channel(());
+        let (display_broadcast, _) = watch::channel(RgbaImage::new(160, 120));
+        let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
         let state = Self {
             config: Config::default(),
-            frame_ready,
-            image_broadcast,
+            display_dirty,
+            display_broadcast,
+            camera_broadcast,
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
+        Self::spawn_camera_loop(state_ref.clone());
         state_ref
     }
 
-    /// Returns a new receiver for the image broadcast channel.
-    pub fn subscribe_to_image_broadcast(&self) -> watch::Receiver<(u32, u32, Vec<u8>)> {
-        self.image_broadcast.subscribe()
+    /// Returns a new receiver for the display broadcast channel.
+    pub fn subscribe_to_display_broadcast(&self) -> watch::Receiver<RgbaImage> {
+        self.display_broadcast.subscribe()
+    }
+
+    /// Returns a new receiver for the camera broadcast channel.
+    pub fn subscribe_to_camera_broadcast(&self) -> watch::Receiver<RgbImage> {
+        self.camera_broadcast.subscribe()
     }
 
     /// Gets the current display configuration.
-    pub fn get_display_config(&self) -> DisplayConfig {
-        self.config.display
+    pub fn get_display_config(&self) -> &DisplayConfig {
+        &self.config.display
     }
 
     /// Sets the display configuration.
@@ -51,25 +69,38 @@ impl AppState {
         }
 
         self.config.display = display;
-        self.frame_ready.send_replace(());
+        self.display_dirty.send_replace(());
+    }
+
+    /// Gets the current camera configuration.
+    pub fn get_camera_config(&self) -> &CameraConfig {
+        &self.config.camera
+    }
+
+    /// Sets the camera configuration.
+    pub fn set_camera_config(&mut self, camera: CameraConfig) {
+        self.config.camera = camera;
     }
 
     /// Spawns the renderer in a background task.
     fn spawn_render_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
-            // Subscribe to state updates
-            let mut receiver = state_ref.read().unwrap().frame_ready.subscribe();
-            receiver.mark_changed();
+            let broadcast;
+            let mut receiver;
+            {
+                let state = state_ref.read().unwrap();
+                broadcast = state.display_broadcast.clone();
+                // Subscribe to state updates
+                receiver = state.display_dirty.subscribe();
+                receiver.mark_changed();
+            }
 
             // Wait for the state to update
             loop {
                 match receiver.changed().await {
                     Ok(()) => {
                         // If the state changes, rerender the display
-                        let state = state_ref.read().unwrap();
-                        state
-                            .image_broadcast
-                            .send_replace(get_frame(render(&state.config)));
+                        broadcast.send_replace(render(&state_ref.read().unwrap().config));
                     }
                     Err(_) => {
                         // If the channel is closed, stop rendering
@@ -79,10 +110,44 @@ impl AppState {
             }
         });
     }
+
+    /// Spawns the camera capture in a background task.
+    fn spawn_camera_loop(state_ref: Arc<RwLock<AppState>>) {
+        tokio::spawn(async move {
+            let mut device = "".to_string();
+            let mut camera: Option<Camera> = None;
+            let broadcast = state_ref.read().unwrap().camera_broadcast.clone();
+
+            // Limit the frame rate to 10 FPS
+            let mut interval = time::interval(Duration::from_millis(100));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+
+                // Save work if no one is listening anyway
+                if broadcast.is_closed() {
+                    continue;
+                }
+
+                // If the device setting changes, start capturing from the new camera
+                let new_device = state_ref.read().unwrap().config.camera.device.clone();
+                if device != new_device {
+                    device = new_device;
+                    camera = start_camera(&device);
+                }
+
+                // Try to capture a frame
+                if let Some(frame) = read_frame(camera.as_mut()) {
+                    // If a frame was captured, broadcast it
+                    broadcast.send_replace(frame);
+                }
+            }
+        });
+    }
 }
 
 /// Renders the display.
-fn render(config: &Config) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+fn render(config: &Config) -> RgbaImage {
     let raw = render_raw(config);
     let proj = get_display_projection(config);
     warp(&raw, &proj, Interpolation::Bilinear, Rgba([0, 0, 0, 0]))
@@ -90,7 +155,7 @@ fn render(config: &Config) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
 
 /// Renders the display in a normalized position.
 /// This will later be warped according to the display configuration.
-fn render_raw(config: &Config) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+fn render_raw(config: &Config) -> RgbaImage {
     let stone_size = stone_size(config);
     let origin_x =
         (config.display.image_width as f32 - stone_size * config.board.width as f32) * 0.5;
@@ -167,9 +232,38 @@ fn stone_size(config: &Config) -> f32 {
     )
 }
 
-/// Helper method for getting the image data to broadcast.
-fn get_frame<P: image::Pixel, Container: std::ops::Deref<Target = [P::Subpixel]>>(
-    image: ImageBuffer<P, Container>,
-) -> (u32, u32, Container) {
-    (image.width(), image.height(), image.into_raw())
+/// Tries to start capturing from a camera specified by its human name.
+fn start_camera(human_name: &str) -> Option<Camera> {
+    // Try to find a camera with the given name
+    let cameras = nokhwa::query(ApiBackend::Auto).ok()?;
+    let camera_info = cameras
+        .into_iter()
+        .find(|camera| camera.human_name() == human_name)?;
+
+    // Create the camera with default/arbitrary settings (mainly to have it choose a frame format)
+    let mut camera = Camera::new(
+        camera_info.index().clone(),
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::None),
+    )
+    .ok()?;
+
+    // Request a specific resolution from the camera, without changing the frame format
+    camera
+        .set_camera_requset(RequestedFormat::new::<RgbFormat>(
+            RequestedFormatType::Closest(CameraFormat::new(
+                Resolution::new(640, 480),
+                camera.frame_format(),
+                10,
+            )),
+        ))
+        .ok()?;
+
+    // Start capturing from the camera
+    camera.open_stream().ok()?;
+    Some(camera)
+}
+
+/// Tries to read a frame from the current camera.
+fn read_frame(camera: Option<&mut Camera>) -> Option<RgbImage> {
+    camera?.frame().ok()?.decode_image::<RgbFormat>().ok()
 }

@@ -25,7 +25,7 @@ impl Default for BoardConfig {
 }
 
 /// The settings used to render the display.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
     pub image_width: u32,
     pub image_height: u32,
@@ -55,5 +55,7 @@ impl Default for DisplayConfig {
 }
 
 /// The settings used to read the board from the camera.
-#[derive(Default, Serialize, Deserialize)]
-pub struct CameraConfig {}
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct CameraConfig {
+    pub device: String,
+}
