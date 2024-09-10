@@ -170,7 +170,9 @@ async function getReferenceImage(take = false)
 {
 	const request = new Request("/api/config/camera/reference",
 	{
-		method: take ? "POST" : "GET",
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(take),
 	});
 	const response = await fetch(request);
 	const url = URL.createObjectURL(await response.blob());

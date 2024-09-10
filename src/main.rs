@@ -15,7 +15,7 @@ use axum::{
     },
     http::{header, StatusCode},
     response::{IntoResponse, Result},
-    routing::{get, MethodRouter},
+    routing::{get, post, MethodRouter},
     Json, Router,
 };
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
@@ -44,7 +44,7 @@ async fn main() {
         .route("/api/cameras", get(get_cameras))
         .route(
             "/api/config/camera/reference",
-            get(get_camera_config_reference).post(post_camera_config_reference),
+            post(post_camera_config_reference),
         )
         .with_state(state);
 
@@ -149,10 +149,16 @@ async fn get_cameras() -> Result<Json<Vec<String>>> {
     Ok(Json(names))
 }
 
-/// Gets the current reference image.
-async fn get_camera_config_reference(
+/// Gets the current reference image, optionally updating it to the current camera view.
+async fn post_camera_config_reference(
     State(state): State<Arc<RwLock<AppState>>>,
+    Json(take): Json<bool>,
 ) -> Result<impl IntoResponse> {
+    if take {
+        state.write().unwrap().take_reference_image();
+    }
+
+    // Encode the result as a PNG image
     let image = state
         .read()
         .unwrap()
@@ -165,14 +171,6 @@ async fn get_camera_config_reference(
         .write_to(&mut writer, ImageFormat::Png)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(([(header::CONTENT_TYPE, "image/png")], writer.into_inner()))
-}
-
-/// Sets the reference image to the current camera view.
-async fn post_camera_config_reference(
-    State(state): State<Arc<RwLock<AppState>>>,
-) -> Result<impl IntoResponse> {
-    state.write().unwrap().take_reference_image();
-    get_camera_config_reference(State(state)).await
 }
 
 /// Helper function for creating a WebSocket route.
