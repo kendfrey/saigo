@@ -11,7 +11,27 @@
 		<label for="device">Device:</label>
 		<select id="device"></select>
 	</div>
+	<p id="resolution">
+		Resolution:
+		<input type="number" id="width">
+		x
+		<input type="number" id="height">
+		<button data-width="640" data-height="360">360p</button>
+		<button data-width="854" data-height="480">480p</button>
+		<button data-width="1280" data-height="720">720p</button>
+		<button data-width="1920" data-height="1080">1080p</button>
+	</p>
+	<p>
+		Click and drag the corners of the outline to match the first line on each edge of the board.
+		The green dot indicates the top-left intersection, and the red dot indicates the top-right intersection
+		(from the perspective of the player, not necessarily the camera).
+	</p>
 	<canvas id="preview"></canvas>
+	<p>
+		An image of the empty board is required as a reference image.
+		<button id="take_reference_image">Take Reference Image</button>
+	</p>
+	<img id="reference"></img>
 	<script src="/global.js"></script>
 	<script src="index.js"></script>
 </body>

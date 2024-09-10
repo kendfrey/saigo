@@ -4,10 +4,10 @@ use std::{
 };
 
 use config::{CameraConfig, Config, DisplayConfig};
-use image::{RgbImage, Rgba, RgbaImage};
+use image::{Rgb, RgbImage, Rgba, RgbaImage};
 use imageproc::{
     drawing::draw_filled_circle_mut,
-    geometric_transformations::{warp, Interpolation, Projection},
+    geometric_transformations::{warp, warp_into, Interpolation, Projection},
 };
 use nokhwa::{
     pixel_format::RgbFormat,
@@ -21,11 +21,15 @@ use tokio::{
 
 pub mod config;
 
+/// The width of a stone in pixels on the normalized image of the board.
+const STONE_SIZE: u32 = 16;
+
 /// The global state of the application.
 pub struct AppState {
     config: Config,
     display_dirty: watch::Sender<()>,
     display_broadcast: watch::Sender<RgbaImage>,
+    camera_dirty: watch::Sender<()>,
     camera_broadcast: watch::Sender<RgbImage>,
 }
 
@@ -34,11 +38,13 @@ impl AppState {
     pub fn start() -> Arc<RwLock<Self>> {
         let (display_dirty, _) = watch::channel(());
         let (display_broadcast, _) = watch::channel(RgbaImage::new(160, 120));
+        let (camera_dirty, _) = watch::channel(());
         let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
         let state = Self {
             config: Config::default(),
             display_dirty,
             display_broadcast,
+            camera_dirty,
             camera_broadcast,
         };
         let state_ref = Arc::new(RwLock::new(state));
@@ -79,25 +85,103 @@ impl AppState {
 
     /// Sets the camera configuration.
     pub fn set_camera_config(&mut self, camera: CameraConfig) {
+        // Copy the old reference image because it's not included in the serialized config
+        let old_reference = self.config.camera.reference_image.clone();
+
+        // If the camera settings change, reset the camera
+        let should_reset = self.config.camera.device != camera.device
+            || self.config.camera.width != camera.width
+            || self.config.camera.height != camera.height;
+
         self.config.camera = camera;
+        self.config.camera.reference_image = old_reference;
+
+        if should_reset {
+            self.camera_dirty.send_replace(());
+        }
+    }
+
+    /// Captures a reference image of the board.
+    pub fn take_reference_image(&mut self) {
+        self.config.camera.reference_image =
+            Some(self.to_board_image(&self.camera_broadcast.borrow()));
+    }
+
+    /// Transforms the camera image to the normalized board image.
+    fn to_board_image(&self, frame: &RgbImage) -> RgbImage {
+        // Buffer to copy the board image to
+        let mut board_image = RgbImage::new(
+            self.config.board.width * STONE_SIZE,
+            self.config.board.height * STONE_SIZE,
+        );
+
+        // Transform the image coordinates to between 0 and 1, since that's how the control points are respresented
+        let normalize_transform =
+            Projection::scale(1.0 / frame.width() as f32, 1.0 / frame.height() as f32);
+
+        // Transform from the 0-1 coordinate system to the final board image
+        let perspective_transform = Projection::from_control_points(
+            [
+                (self.config.camera.top_left.x, self.config.camera.top_left.y),
+                (
+                    self.config.camera.top_right.x,
+                    self.config.camera.top_right.y,
+                ),
+                (
+                    self.config.camera.bottom_left.x,
+                    self.config.camera.bottom_left.y,
+                ),
+                (
+                    self.config.camera.bottom_right.x,
+                    self.config.camera.bottom_right.y,
+                ),
+            ],
+            [
+                (STONE_SIZE as f32 * 0.5, STONE_SIZE as f32 * 0.5),
+                (
+                    STONE_SIZE as f32 * (self.config.board.width as f32 - 0.5),
+                    STONE_SIZE as f32 * 0.5,
+                ),
+                (
+                    STONE_SIZE as f32 * 0.5,
+                    STONE_SIZE as f32 * (self.config.board.height as f32 - 0.5),
+                ),
+                (
+                    STONE_SIZE as f32 * (self.config.board.width as f32 - 0.5),
+                    STONE_SIZE as f32 * (self.config.board.height as f32 - 0.5),
+                ),
+            ],
+        )
+        .unwrap_or(normalize_transform.invert());
+
+        // Warp the camera frame to the board image
+        warp_into(
+            &frame,
+            &normalize_transform.and_then(perspective_transform),
+            Interpolation::Bilinear,
+            Rgb([0, 0, 0]),
+            &mut board_image,
+        );
+
+        board_image
     }
 
     /// Spawns the renderer in a background task.
     fn spawn_render_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let broadcast;
-            let mut receiver;
+            let mut dirty_receiver;
             {
                 let state = state_ref.read().unwrap();
                 broadcast = state.display_broadcast.clone();
                 // Subscribe to state updates
-                receiver = state.display_dirty.subscribe();
-                receiver.mark_changed();
+                dirty_receiver = state.display_dirty.subscribe();
+                dirty_receiver.mark_changed();
             }
 
             // Wait for the state to update
             loop {
-                match receiver.changed().await {
+                match dirty_receiver.changed().await {
                     Ok(()) => {
                         // If the state changes, rerender the display
                         broadcast.send_replace(render(&state_ref.read().unwrap().config));
@@ -114,9 +198,17 @@ impl AppState {
     /// Spawns the camera capture in a background task.
     fn spawn_camera_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
-            let mut device = "".to_string();
+            let camera_broadcast;
+            let mut dirty_receiver;
+            {
+                let state = state_ref.read().unwrap();
+                camera_broadcast = state.camera_broadcast.clone();
+                // Subscribe to camera configuration changes that require a reset
+                dirty_receiver = state.camera_dirty.subscribe();
+                dirty_receiver.mark_changed();
+            }
+
             let mut camera: Option<Camera> = None;
-            let broadcast = state_ref.read().unwrap().camera_broadcast.clone();
 
             // Limit the frame rate to 10 FPS
             let mut interval = time::interval(Duration::from_millis(100));
@@ -125,21 +217,20 @@ impl AppState {
                 interval.tick().await;
 
                 // Save work if no one is listening anyway
-                if broadcast.is_closed() {
+                if camera_broadcast.is_closed() {
                     continue;
                 }
 
-                // If the device setting changes, start capturing from the new camera
-                let new_device = state_ref.read().unwrap().config.camera.device.clone();
-                if device != new_device {
-                    device = new_device;
-                    camera = start_camera(&device);
+                // If the camera capture settings change, reset the camera
+                if dirty_receiver.has_changed().unwrap() {
+                    dirty_receiver.mark_unchanged();
+                    camera = start_camera(&state_ref.read().unwrap().config.camera);
                 }
 
                 // Try to capture a frame
                 if let Some(frame) = read_frame(camera.as_mut()) {
-                    // If a frame was captured, broadcast it
-                    broadcast.send_replace(frame);
+                    // Broadcast the raw frame
+                    camera_broadcast.send_replace(frame);
                 }
             }
         });
@@ -177,7 +268,17 @@ fn render_raw(config: &Config) -> RgbaImage {
         }
     }
 
-    // Draw a red circle in the upper right corner for orientation
+    // Draw a green circle in the top left corner for orientation
+    let ctr_x = origin_x + stone_size * 0.5;
+    let ctr_y = origin_y + stone_size * 0.5;
+    draw_filled_circle_mut(
+        &mut img,
+        (ctr_x as i32, ctr_y as i32),
+        (stone_size * 0.25) as i32,
+        Rgba([0, 255, 0, 255]),
+    );
+
+    // Draw a red circle in the top right corner for orientation
     let ctr_x = origin_x + (config.board.height as f32 - 0.5) * stone_size;
     let ctr_y = origin_y + stone_size * 0.5;
     draw_filled_circle_mut(
@@ -232,13 +333,13 @@ fn stone_size(config: &Config) -> f32 {
     )
 }
 
-/// Tries to start capturing from a camera specified by its human name.
-fn start_camera(human_name: &str) -> Option<Camera> {
+/// Tries to start capturing from a camera based on the configuration.
+fn start_camera(config: &CameraConfig) -> Option<Camera> {
     // Try to find a camera with the given name
     let cameras = nokhwa::query(ApiBackend::Auto).ok()?;
     let camera_info = cameras
         .into_iter()
-        .find(|camera| camera.human_name() == human_name)?;
+        .find(|camera| camera.human_name() == config.device)?;
 
     // Create the camera with default/arbitrary settings (mainly to have it choose a frame format)
     let mut camera = Camera::new(
@@ -251,7 +352,7 @@ fn start_camera(human_name: &str) -> Option<Camera> {
     camera
         .set_camera_requset(RequestedFormat::new::<RgbFormat>(
             RequestedFormatType::Closest(CameraFormat::new(
-                Resolution::new(640, 480),
+                Resolution::new(config.width, config.height),
                 camera.frame_format(),
                 10,
             )),

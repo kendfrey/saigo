@@ -94,9 +94,9 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
 name = "async-trait"
-version = "0.1.81"
+version = "0.1.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e0c28dcc82d7c8ead5cb13beb15405b57b8546e93215673ff8ca0349a028107"
+checksum = "a27b8a3a6e1a44fa4c8baf1f653e4172e81486d4941f2237e20dc2d0cf4ddff1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -324,9 +324,9 @@ checksum = "8318a53db07bb3f8dca91a600466bdb3f2eaadeedfdbcf02e1accbad9271ba50"
 
 [[package]]
 name = "cc"
-version = "1.1.15"
+version = "1.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b6a275aa2903740dc87da01c62040406b8812552e97129a63ea8850a17c6e6"
+checksum = "e9d013ecb737093c0e86b151a7b837993cf9ec6c502946cfb44bedc392421e0b"
 dependencies = [
  "jobserver",
  "libc",
@@ -1279,7 +1279,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 [[package]]
 name = "nokhwa"
 version = "0.10.4"
-source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#804a4147d5910ae98422c0dcd3b8430406f3acb9"
+source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#a0250d007c562a95f32b0c3b714cb532f228f5ff"
 dependencies = [
  "flume 0.10.14",
  "image",
@@ -1295,7 +1295,7 @@ dependencies = [
 [[package]]
 name = "nokhwa-bindings-linux"
 version = "0.1.0"
-source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#804a4147d5910ae98422c0dcd3b8430406f3acb9"
+source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#a0250d007c562a95f32b0c3b714cb532f228f5ff"
 dependencies = [
  "nokhwa-core",
  "v4l",
@@ -1305,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "nokhwa-bindings-macos"
 version = "0.2.1"
-source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#804a4147d5910ae98422c0dcd3b8430406f3acb9"
+source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#a0250d007c562a95f32b0c3b714cb532f228f5ff"
 dependencies = [
  "block",
  "cocoa-foundation",
@@ -1321,7 +1321,7 @@ dependencies = [
 [[package]]
 name = "nokhwa-bindings-windows"
 version = "0.4.0"
-source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#804a4147d5910ae98422c0dcd3b8430406f3acb9"
+source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#a0250d007c562a95f32b0c3b714cb532f228f5ff"
 dependencies = [
  "nokhwa-core",
  "once_cell",
@@ -1331,7 +1331,7 @@ dependencies = [
 [[package]]
 name = "nokhwa-core"
 version = "0.1.2"
-source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#804a4147d5910ae98422c0dcd3b8430406f3acb9"
+source = "git+https://github.com/kendfrey/nokhwa.git?branch=0.10#a0250d007c562a95f32b0c3b714cb532f228f5ff"
 dependencies = [
  "bytes",
  "image",
@@ -1896,9 +1896,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.127"
+version = "1.0.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8043c06d9f82bd7271361ed64f415fe5e12a77fdb52e573e7f06a516dea329ad"
+checksum = "6ff5456707a1de34e7e37f2a6fd3d3f808c318259cbd01ab6377795054b483d8"
 dependencies = [
  "itoa",
  "memchr",
@@ -2145,9 +2145,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.11"
+version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf6b47b3771c49ac75ad09a6162f53ad4b8088b76ac60e8ec1455b31a189fe1"
+checksum = "61e7c3654c13bcd040d4a03abee2c75b1d14a37b423cf5a813ceae1cc903ec6a"
 dependencies = [
  "bytes",
  "futures-core",

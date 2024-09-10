@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    io::Cursor,
     sync::{Arc, RwLock},
 };
 
@@ -12,12 +13,12 @@ use axum::{
         ws::{Message, WebSocket},
         State, WebSocketUpgrade,
     },
-    http::StatusCode,
-    response::Result,
+    http::{header, StatusCode},
+    response::{IntoResponse, Result},
     routing::{get, MethodRouter},
     Json, Router,
 };
-use image::{buffer::ConvertBuffer, RgbaImage};
+use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -41,6 +42,10 @@ async fn main() {
             get(get_config_camera).put(put_config_camera),
         )
         .route("/api/cameras", get(get_cameras))
+        .route(
+            "/api/config/camera/reference",
+            get(get_camera_config_reference).post(post_camera_config_reference),
+        )
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:5410").await.unwrap();
@@ -142,6 +147,32 @@ async fn get_cameras() -> Result<Json<Vec<String>>> {
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let names = cameras.iter().map(|camera| camera.human_name()).collect();
     Ok(Json(names))
+}
+
+/// Gets the current reference image.
+async fn get_camera_config_reference(
+    State(state): State<Arc<RwLock<AppState>>>,
+) -> Result<impl IntoResponse> {
+    let image = state
+        .read()
+        .unwrap()
+        .get_camera_config()
+        .reference_image
+        .clone()
+        .unwrap_or(RgbImage::new(1, 1));
+    let mut writer = Cursor::new(vec![]);
+    image
+        .write_to(&mut writer, ImageFormat::Png)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(([(header::CONTENT_TYPE, "image/png")], writer.into_inner()))
+}
+
+/// Sets the reference image to the current camera view.
+async fn post_camera_config_reference(
+    State(state): State<Arc<RwLock<AppState>>>,
+) -> Result<impl IntoResponse> {
+    state.write().unwrap().take_reference_image();
+    get_camera_config_reference(State(state)).await
 }
 
 /// Helper function for creating a WebSocket route.
