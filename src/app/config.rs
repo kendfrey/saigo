@@ -10,7 +10,7 @@ pub struct Config {
 }
 
 /// The settings for the game board itself.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BoardConfig {
     pub width: u32,
     pub height: u32,

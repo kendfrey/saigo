@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use config::{CameraConfig, Config, DisplayConfig};
+use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
 use imageproc::{
     drawing::draw_filled_circle_mut,
@@ -61,6 +61,21 @@ impl AppState {
     /// Returns a new receiver for the camera broadcast channel.
     pub fn subscribe_to_camera_broadcast(&self) -> watch::Receiver<RgbImage> {
         self.camera_broadcast.subscribe()
+    }
+
+    /// Gets the current board configuration.
+    pub fn get_board_config(&self) -> &BoardConfig {
+        &self.config.board
+    }
+
+    /// Sets the board configuration.
+    pub fn set_board_config(&mut self, board: BoardConfig) {
+        if board.width == 0 || board.height == 0 {
+            return;
+        }
+
+        self.config.board = board;
+        self.display_dirty.send_replace(());
     }
 
     /// Gets the current display configuration.

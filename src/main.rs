@@ -5,7 +5,7 @@ use std::{
 };
 
 use app::{
-    config::{CameraConfig, DisplayConfig},
+    config::{BoardConfig, CameraConfig, DisplayConfig},
     AppState,
 };
 use axum::{
@@ -33,6 +33,10 @@ async fn main() {
         .nest_service("/", ServeDir::new("html"))
         .route("/ws/display", websocket(websocket_display))
         .route("/ws/camera", websocket(websocket_camera))
+        .route(
+            "/api/config/board",
+            get(get_config_board).put(put_config_board),
+        )
         .route(
             "/api/config/display",
             get(get_config_display).put(put_config_display),
@@ -113,6 +117,19 @@ async fn websocket_camera(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
             }
         }
     }
+}
+
+/// Gets the current board configuration.
+async fn get_config_board(State(state): State<Arc<RwLock<AppState>>>) -> Json<BoardConfig> {
+    Json(state.read().unwrap().get_board_config().clone())
+}
+
+/// Updates the board configuration.
+async fn put_config_board(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Json(board): Json<BoardConfig>,
+) {
+    state.write().unwrap().set_board_config(board);
 }
 
 /// Gets the current display configuration.
