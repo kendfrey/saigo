@@ -41,7 +41,7 @@ impl AppState {
         let (camera_dirty, _) = watch::channel(());
         let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
         let state = Self {
-            config: Config::default(),
+            config: Config::load(None).expect("Failed to load configuration"),
             display_dirty,
             display_broadcast,
             camera_dirty,
@@ -69,13 +69,14 @@ impl AppState {
     }
 
     /// Sets the board configuration.
-    pub fn set_board_config(&mut self, board: BoardConfig) {
+    pub fn set_board_config(&mut self, board: BoardConfig) -> Result<(), String> {
         if board.width == 0 || board.height == 0 {
-            return;
+            return Err("The board size must be greater than zero.".to_string());
         }
 
         self.config.board = board;
         self.display_dirty.send_replace(());
+        self.config.save_fast()
     }
 
     /// Gets the current display configuration.
@@ -84,13 +85,14 @@ impl AppState {
     }
 
     /// Sets the display configuration.
-    pub fn set_display_config(&mut self, display: DisplayConfig) {
+    pub fn set_display_config(&mut self, display: DisplayConfig) -> Result<(), String> {
         if display.image_width == 0 || display.image_height == 0 {
-            return;
+            return Err("The image size must be greater than zero.".to_string());
         }
 
         self.config.display = display;
         self.display_dirty.send_replace(());
+        self.config.save_fast()
     }
 
     /// Gets the current camera configuration.
@@ -99,9 +101,9 @@ impl AppState {
     }
 
     /// Sets the camera configuration.
-    pub fn set_camera_config(&mut self, camera: CameraConfig) {
-        // Copy the old reference image because it's not included in the serialized config
-        let old_reference = self.config.camera.reference_image.clone();
+    pub fn set_camera_config(&mut self, mut camera: CameraConfig) -> Result<(), String> {
+        // Transfer the old reference image because it's not included in the serialized config
+        camera.reference_image = self.config.camera.reference_image.take();
 
         // If the camera settings change, reset the camera
         let should_reset = self.config.camera.device != camera.device
@@ -109,17 +111,19 @@ impl AppState {
             || self.config.camera.height != camera.height;
 
         self.config.camera = camera;
-        self.config.camera.reference_image = old_reference;
 
         if should_reset {
             self.camera_dirty.send_replace(());
         }
+
+        self.config.save_fast()
     }
 
     /// Captures a reference image of the board.
-    pub fn take_reference_image(&mut self) {
+    pub fn take_reference_image(&mut self) -> Result<(), String> {
         self.config.camera.reference_image =
             Some(self.to_board_image(&self.camera_broadcast.borrow()));
+        self.config.save_reference_image(None)
     }
 
     /// Transforms the camera image to the normalized board image.
@@ -130,7 +134,7 @@ impl AppState {
             self.config.board.height * STONE_SIZE,
         );
 
-        // Transform the image coordinates to between 0 and 1, since that's how the control points are respresented
+        // Transform the image coordinates to between 0 and 1, since that's how the control points are represented
         let normalize_transform =
             Projection::scale(1.0 / frame.width() as f32, 1.0 / frame.height() as f32);
 

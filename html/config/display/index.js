@@ -68,5 +68,7 @@ async function onInput()
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(config),
 	});
-	await fetch(request);
+	const response = await fetch(request);
+	if (!response.ok)
+		alert(await response.text());
 }

@@ -128,8 +128,13 @@ async fn get_config_board(State(state): State<Arc<RwLock<AppState>>>) -> Json<Bo
 async fn put_config_board(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(board): Json<BoardConfig>,
-) {
-    state.write().unwrap().set_board_config(board);
+) -> Result<()> {
+    state
+        .write()
+        .unwrap()
+        .set_board_config(board)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
 }
 
 /// Gets the current display configuration.
@@ -141,8 +146,13 @@ async fn get_config_display(State(state): State<Arc<RwLock<AppState>>>) -> Json<
 async fn put_config_display(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(display): Json<DisplayConfig>,
-) {
-    state.write().unwrap().set_display_config(display);
+) -> Result<()> {
+    state
+        .write()
+        .unwrap()
+        .set_display_config(display)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
 }
 
 /// Gets the current camera configuration.
@@ -154,8 +164,13 @@ async fn get_config_camera(State(state): State<Arc<RwLock<AppState>>>) -> Json<C
 async fn put_config_camera(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(camera): Json<CameraConfig>,
-) {
-    state.write().unwrap().set_camera_config(camera);
+) -> Result<()> {
+    state
+        .write()
+        .unwrap()
+        .set_camera_config(camera)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
 }
 
 /// Gets a list of available cameras.
@@ -172,7 +187,11 @@ async fn post_camera_config_reference(
     Json(take): Json<bool>,
 ) -> Result<impl IntoResponse> {
     if take {
-        state.write().unwrap().take_reference_image();
+        state
+            .write()
+            .unwrap()
+            .take_reference_image()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
 
     // Encode the result as a PNG image

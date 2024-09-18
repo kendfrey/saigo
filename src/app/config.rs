@@ -1,3 +1,8 @@
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
+
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +12,77 @@ pub struct Config {
     pub board: BoardConfig,
     pub display: DisplayConfig,
     pub camera: CameraConfig,
+}
+
+impl Config {
+    const REFERENCE_IMAGE_FILE: &'static str = "reference.png";
+
+    /// Saves a lightweight subset of the configuration to the current profile.
+    pub fn save_fast(&self) -> Result<(), String> {
+        self.save(None, true)
+    }
+
+    /// Saves the configuration to the file system.
+    pub fn save(&self, profile: Option<&str>, fast: bool) -> Result<(), String> {
+        let full_path = get_configuration_file_path(profile)?;
+        confy::store_path(full_path, self).map_err(|e| e.to_string())?;
+        if !fast {
+            self.save_reference_image(profile)?;
+        }
+        Ok(())
+    }
+
+    /// Saves the reference image to the file system.
+    pub fn save_reference_image(&self, profile: Option<&str>) -> Result<(), String> {
+        let full_path =
+            get_configuration_file_path(profile)?.with_file_name(Self::REFERENCE_IMAGE_FILE);
+        match &self.camera.reference_image {
+            Some(reference_image) => reference_image.save(full_path).map_err(|e| e.to_string()),
+            None => fs::remove_file(full_path).map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Loads the configuration from the file system.
+    pub fn load(profile: Option<&str>) -> Result<Self, String> {
+        let full_path = get_configuration_file_path(profile)?;
+        let mut config = confy::load_path::<Self>(full_path.clone()).map_err(|e| e.to_string())?;
+        match image::open(full_path.with_file_name(Self::REFERENCE_IMAGE_FILE)) {
+            Ok(reference_image) => {
+                config.camera.reference_image = Some(reference_image.into_rgb8())
+            }
+            Err(_) => config.camera.reference_image = None,
+        }
+        Ok(config)
+    }
+}
+
+/// Gets the full path to the configuration file for the given profile name.
+fn get_configuration_file_path(profile: Option<&str>) -> Result<PathBuf, String> {
+    let mut full_path =
+        confy::get_configuration_file_path("Saigo", "config").map_err(|e| e.to_string())?;
+
+    // If a profile is provided, add it to the directory without changing the file name
+    if let Some(profile) = profile {
+        if !is_single_normal_component(profile) {
+            return Err("The path must be a valid folder name.".to_string());
+        }
+
+        let file_name = full_path.file_name().unwrap().to_os_string();
+        full_path.pop();
+        full_path.push(profile);
+        full_path.push(file_name);
+    }
+
+    Ok(full_path)
+}
+
+/// Checks that the path contains a single component, and that it is a normal component.
+fn is_single_normal_component<P: AsRef<Path>>(path: P) -> bool {
+    let mut components = path.as_ref().components();
+    match components.next() {
+        Some(Component::Normal(_)) => components.next().is_none(),
+        _ => false,
+    }
 }
 
 /// The settings for the game board itself.
