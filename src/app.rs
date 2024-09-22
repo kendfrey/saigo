@@ -63,6 +63,20 @@ impl AppState {
         self.camera_broadcast.subscribe()
     }
 
+    /// Saves the current configuration to the specified profile.
+    pub fn save_config(&self, profile: &str) -> Result<(), String> {
+        self.config.save(Some(profile), false)
+    }
+
+    /// Loads the configuration from the specified profile.
+    pub fn load_config(&mut self, profile: &str) -> Result<(), String> {
+        self.config = Config::load(Some(profile))?;
+        self.config.save(None, false)?;
+        self.display_dirty.send_replace(());
+        self.camera_dirty.send_replace(());
+        Ok(())
+    }
+
     /// Gets the current board configuration.
     pub fn get_board_config(&self) -> &BoardConfig {
         &self.config.board

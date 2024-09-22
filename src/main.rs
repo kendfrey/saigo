@@ -5,13 +5,13 @@ use std::{
 };
 
 use app::{
-    config::{BoardConfig, CameraConfig, DisplayConfig},
+    config::{self, BoardConfig, CameraConfig, DisplayConfig},
     AppState,
 };
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
     },
     http::{header, StatusCode},
     response::{IntoResponse, Result},
@@ -20,6 +20,7 @@ use axum::{
 };
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 
@@ -33,6 +34,9 @@ async fn main() {
         .nest_service("/", ServeDir::new("html"))
         .route("/ws/display", websocket(websocket_display))
         .route("/ws/camera", websocket(websocket_camera))
+        .route("/api/config/profiles", get(get_config_profiles))
+        .route("/api/config/save", post(post_config_save))
+        .route("/api/config/load", post(post_config_load))
         .route(
             "/api/config/board",
             get(get_config_board).put(put_config_board),
@@ -117,6 +121,45 @@ async fn websocket_camera(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
             }
         }
     }
+}
+
+/// Gets the list of available configuration profiles.
+async fn get_config_profiles() -> Result<Json<Vec<String>>> {
+    let profiles =
+        config::get_profiles().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(profiles))
+}
+
+/// Used for deserializing a profile name from a query parameter.
+#[derive(Deserialize)]
+struct Profile {
+    profile: String,
+}
+
+/// Saves the current configuration to the specified profile.
+async fn post_config_save(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Query(Profile { profile }): Query<Profile>,
+) -> Result<()> {
+    state
+        .write()
+        .unwrap()
+        .save_config(&profile)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
+}
+
+/// Loads the configuration from the specified profile.
+async fn post_config_load(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Query(Profile { profile }): Query<Profile>,
+) -> Result<()> {
+    state
+        .write()
+        .unwrap()
+        .load_config(&profile)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
 }
 
 /// Gets the current board configuration.

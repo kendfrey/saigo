@@ -2,3 +2,9 @@
 {
 	width: 50px;
 }
+
+#save_profile, #load_profile
+{
+	width: 150px;
+	box-sizing: border-box;
+}

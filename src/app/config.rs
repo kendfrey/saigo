@@ -56,6 +56,25 @@ impl Config {
     }
 }
 
+/// Gets the list of available configuration profiles.
+pub fn get_profiles() -> Result<Vec<String>, String> {
+    let entries = get_configuration_file_path(None)?
+        .parent()
+        .unwrap()
+        .read_dir()
+        .map_err(|e| e.to_string())?;
+    let dirs = entries.filter_map(|entry| {
+        entry.ok().and_then(|entry| {
+            if entry.file_type().ok()?.is_dir() {
+                Some(entry.file_name().into_string().ok()?)
+            } else {
+                None
+            }
+        })
+    });
+    Ok(dirs.collect())
+}
+
 /// Gets the full path to the configuration file for the given profile name.
 fn get_configuration_file_path(profile: Option<&str>) -> Result<PathBuf, String> {
     let mut full_path =
