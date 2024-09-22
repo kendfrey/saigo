@@ -47,6 +47,19 @@ document.getElementById("load").addEventListener("click", async () =>
 	await loadConfig();
 });
 
+document.getElementById("delete").addEventListener("click", async () =>
+{
+	const queryString = new URLSearchParams({ profile: load_profile.value }).toString();
+	const request = new Request("/api/config/delete?" + queryString,
+	{
+		method: "POST",
+	});
+	const response = await fetch(request);
+	if (!response.ok)
+		alert(await response.text());
+	await loadProfiles();
+});
+
 load();
 
 async function load()

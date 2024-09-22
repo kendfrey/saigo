@@ -54,6 +54,16 @@ impl Config {
         }
         Ok(config)
     }
+
+    /// Deletes the profile.
+    pub fn delete(profile: &str) -> Result<(), String> {
+        fs::remove_dir_all(
+            get_configuration_file_path(Some(profile))?
+                .parent()
+                .unwrap(),
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// Gets the list of available configuration profiles.

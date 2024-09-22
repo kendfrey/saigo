@@ -5,7 +5,7 @@ use std::{
 };
 
 use app::{
-    config::{self, BoardConfig, CameraConfig, DisplayConfig},
+    config::{self, BoardConfig, CameraConfig, Config, DisplayConfig},
     AppState,
 };
 use axum::{
@@ -37,6 +37,7 @@ async fn main() {
         .route("/api/config/profiles", get(get_config_profiles))
         .route("/api/config/save", post(post_config_save))
         .route("/api/config/load", post(post_config_load))
+        .route("/api/config/delete", post(post_config_delete))
         .route(
             "/api/config/board",
             get(get_config_board).put(put_config_board),
@@ -159,6 +160,12 @@ async fn post_config_load(
         .unwrap()
         .load_config(&profile)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(())
+}
+
+/// Deletes the specified profile.
+async fn post_config_delete(Query(Profile { profile }): Query<Profile>) -> Result<()> {
+    Config::delete(&profile).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     Ok(())
 }
 
