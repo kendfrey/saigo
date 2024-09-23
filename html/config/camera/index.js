@@ -170,11 +170,10 @@ function render()
 
 async function getReferenceImage(take = false)
 {
-	const request = new Request("/api/config/camera/reference",
+	const queryString = new URLSearchParams({ take }).toString();
+	const request = new Request("/api/config/camera/reference?" + queryString,
 	{
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(take),
 	});
 	const response = await fetch(request);
 	const url = URL.createObjectURL(await response.blob());

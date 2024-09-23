@@ -231,10 +231,16 @@ async fn get_cameras() -> Result<Json<Vec<String>>> {
     Ok(Json(names))
 }
 
+/// Used for deserializing the query string for [`post_camera_config_reference`].
+#[derive(Deserialize)]
+struct Take {
+    take: bool,
+}
+
 /// Gets the current reference image, optionally updating it to the current camera view.
 async fn post_camera_config_reference(
     State(state): State<Arc<RwLock<AppState>>>,
-    Json(take): Json<bool>,
+    Query(Take { take }): Query<Take>,
 ) -> Result<impl IntoResponse> {
     if take {
         state
