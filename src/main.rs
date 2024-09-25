@@ -13,11 +13,12 @@ use axum::{
         ws::{Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
-    http::{header, StatusCode},
+    http::header,
     response::{IntoResponse, Result},
     routing::{get, post, MethodRouter},
     Json, Router,
 };
+use error::SaigoError;
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use serde::Deserialize;
@@ -25,6 +26,7 @@ use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 
 mod app;
+mod error;
 
 #[tokio::main]
 async fn main() {
@@ -126,8 +128,7 @@ async fn websocket_camera(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
 
 /// Gets the list of available configuration profiles.
 async fn get_config_profiles() -> Result<Json<Vec<String>>> {
-    let profiles =
-        config::get_profiles().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let profiles = config::get_profiles()?;
     Ok(Json(profiles))
 }
 
@@ -142,11 +143,7 @@ async fn post_config_save(
     State(state): State<Arc<RwLock<AppState>>>,
     Query(Profile { profile }): Query<Profile>,
 ) -> Result<()> {
-    state
-        .write()
-        .unwrap()
-        .save_config(&profile)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.write().unwrap().save_config(&profile)?;
     Ok(())
 }
 
@@ -155,17 +152,13 @@ async fn post_config_load(
     State(state): State<Arc<RwLock<AppState>>>,
     Query(Profile { profile }): Query<Profile>,
 ) -> Result<()> {
-    state
-        .write()
-        .unwrap()
-        .load_config(&profile)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.write().unwrap().load_config(&profile)?;
     Ok(())
 }
 
 /// Deletes the specified profile.
 async fn post_config_delete(Query(Profile { profile }): Query<Profile>) -> Result<()> {
-    Config::delete(&profile).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Config::delete(&profile)?;
     Ok(())
 }
 
@@ -179,11 +172,7 @@ async fn put_config_board(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(board): Json<BoardConfig>,
 ) -> Result<()> {
-    state
-        .write()
-        .unwrap()
-        .set_board_config(board)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.write().unwrap().set_board_config(board)?;
     Ok(())
 }
 
@@ -197,11 +186,7 @@ async fn put_config_display(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(display): Json<DisplayConfig>,
 ) -> Result<()> {
-    state
-        .write()
-        .unwrap()
-        .set_display_config(display)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.write().unwrap().set_display_config(display)?;
     Ok(())
 }
 
@@ -215,18 +200,13 @@ async fn put_config_camera(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(camera): Json<CameraConfig>,
 ) -> Result<()> {
-    state
-        .write()
-        .unwrap()
-        .set_camera_config(camera)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.write().unwrap().set_camera_config(camera)?;
     Ok(())
 }
 
 /// Gets a list of available cameras.
 async fn get_cameras() -> Result<Json<Vec<String>>> {
-    let cameras = nokhwa::query(ApiBackend::Auto)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let cameras = nokhwa::query(ApiBackend::Auto).map_err(SaigoError::Nokhwa)?;
     let names = cameras.iter().map(|camera| camera.human_name()).collect();
     Ok(Json(names))
 }
@@ -243,11 +223,7 @@ async fn post_camera_config_reference(
     Query(Take { take }): Query<Take>,
 ) -> Result<impl IntoResponse> {
     if take {
-        state
-            .write()
-            .unwrap()
-            .take_reference_image()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        state.write().unwrap().take_reference_image()?;
     }
 
     // Encode the result as a PNG image
@@ -261,7 +237,7 @@ async fn post_camera_config_reference(
     let mut writer = Cursor::new(vec![]);
     image
         .write_to(&mut writer, ImageFormat::Png)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(SaigoError::Image)?;
     Ok(([(header::CONTENT_TYPE, "image/png")], writer.into_inner()))
 }
 
