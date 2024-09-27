@@ -1,8 +1,4 @@
-use std::{
-    future::Future,
-    io::Cursor,
-    sync::{Arc, RwLock},
-};
+use std::{future::Future, io::Cursor, sync::Arc};
 
 use app::{
     config::{self, BoardConfig, CameraConfig, Config, DisplayConfig},
@@ -22,7 +18,7 @@ use error::SaigoError;
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use serde::Deserialize;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::RwLock};
 use tower_http::services::ServeDir;
 
 mod app;
@@ -66,7 +62,7 @@ async fn main() {
 /// Watches for display updates and sends them to the client.
 async fn websocket_display(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
     // Subscribe to display updates
-    let mut receiver = state.read().unwrap().subscribe_to_display_broadcast();
+    let mut receiver = state.read().await.subscribe_to_display_broadcast();
     receiver.mark_changed();
 
     loop {
@@ -98,7 +94,10 @@ async fn websocket_display(state: Arc<RwLock<AppState>>, mut socket: WebSocket) 
 /// Watches for camera frames and sends them to the client.
 async fn websocket_camera(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
     // Subscribe to camera frames
-    let mut receiver = state.read().unwrap().subscribe_to_camera_broadcast();
+    let mut receiver = state.read().await.subscribe_to_camera_broadcast();
+
+    // Lock the board configuration
+    let _board_config_lock = state.read().await.lock_board_config().await;
 
     loop {
         // Wait for a new frame to be available
@@ -143,7 +142,7 @@ async fn post_config_save(
     State(state): State<Arc<RwLock<AppState>>>,
     Query(Profile { profile }): Query<Profile>,
 ) -> Result<()> {
-    state.write().unwrap().save_config(&profile)?;
+    state.write().await.save_config(&profile)?;
     Ok(())
 }
 
@@ -152,7 +151,7 @@ async fn post_config_load(
     State(state): State<Arc<RwLock<AppState>>>,
     Query(Profile { profile }): Query<Profile>,
 ) -> Result<()> {
-    state.write().unwrap().load_config(&profile)?;
+    state.write().await.load_config(&profile)?;
     Ok(())
 }
 
@@ -164,7 +163,7 @@ async fn post_config_delete(Query(Profile { profile }): Query<Profile>) -> Resul
 
 /// Gets the current board configuration.
 async fn get_config_board(State(state): State<Arc<RwLock<AppState>>>) -> Json<BoardConfig> {
-    Json(state.read().unwrap().get_board_config().clone())
+    Json(state.read().await.get_board_config().clone())
 }
 
 /// Updates the board configuration.
@@ -172,13 +171,13 @@ async fn put_config_board(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(board): Json<BoardConfig>,
 ) -> Result<()> {
-    state.write().unwrap().set_board_config(board)?;
+    state.write().await.set_board_config(board)?;
     Ok(())
 }
 
 /// Gets the current display configuration.
 async fn get_config_display(State(state): State<Arc<RwLock<AppState>>>) -> Json<DisplayConfig> {
-    Json(state.read().unwrap().get_display_config().clone())
+    Json(state.read().await.get_display_config().clone())
 }
 
 /// Updates the display configuration.
@@ -186,13 +185,13 @@ async fn put_config_display(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(display): Json<DisplayConfig>,
 ) -> Result<()> {
-    state.write().unwrap().set_display_config(display)?;
+    state.write().await.set_display_config(display)?;
     Ok(())
 }
 
 /// Gets the current camera configuration.
 async fn get_config_camera(State(state): State<Arc<RwLock<AppState>>>) -> Json<CameraConfig> {
-    Json(state.read().unwrap().get_camera_config().clone())
+    Json(state.read().await.get_camera_config().clone())
 }
 
 /// Updates the camera configuration.
@@ -200,7 +199,7 @@ async fn put_config_camera(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(camera): Json<CameraConfig>,
 ) -> Result<()> {
-    state.write().unwrap().set_camera_config(camera)?;
+    state.write().await.set_camera_config(camera)?;
     Ok(())
 }
 
@@ -223,13 +222,13 @@ async fn post_camera_config_reference(
     Query(Take { take }): Query<Take>,
 ) -> Result<impl IntoResponse> {
     if take {
-        state.write().unwrap().take_reference_image()?;
+        state.write().await.take_reference_image()?;
     }
 
     // Encode the result as a PNG image
     let image = state
         .read()
-        .unwrap()
+        .await
         .get_camera_config()
         .reference_image
         .clone()

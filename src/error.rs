@@ -18,6 +18,7 @@ use nokhwa::NokhwaError;
 pub enum SaigoError {
     InvalidProfileName(String),
     NonexistentProfile(String),
+    Locked(String),
     Confy(ConfyError),
     Image(ImageError),
     IO(io::Error),
@@ -33,6 +34,7 @@ impl Display for SaigoError {
             SaigoError::NonexistentProfile(profile) => {
                 write!(f, "Profile '{}' does not exist.", profile)
             }
+            SaigoError::Locked(message) => write!(f, "{}", message),
             SaigoError::Confy(error) => write!(f, "Confy error: {}", error),
             SaigoError::Image(error) => write!(f, "Image error: {}", error),
             SaigoError::IO(error) => write!(f, "IO error: {}", error),
@@ -42,6 +44,22 @@ impl Display for SaigoError {
 }
 
 impl Error for SaigoError {}
+
+impl IntoResponse for SaigoError {
+    fn into_response(self) -> Response<Body> {
+        let status = match self {
+            SaigoError::InvalidProfileName(_) => StatusCode::BAD_REQUEST,
+            SaigoError::NonexistentProfile(_) => StatusCode::BAD_REQUEST,
+            SaigoError::Locked(_) => StatusCode::CONFLICT,
+            SaigoError::Confy(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            SaigoError::Image(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            SaigoError::IO(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            SaigoError::Nokhwa(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
+        (status, self.to_string()).into_response()
+    }
+}
 
 impl From<ConfyError> for SaigoError {
     fn from(error: ConfyError) -> Self {
@@ -64,20 +82,5 @@ impl From<io::Error> for SaigoError {
 impl From<NokhwaError> for SaigoError {
     fn from(error: NokhwaError) -> Self {
         SaigoError::Nokhwa(error)
-    }
-}
-
-impl IntoResponse for SaigoError {
-    fn into_response(self) -> Response<Body> {
-        let status = match self {
-            SaigoError::InvalidProfileName(_) => StatusCode::BAD_REQUEST,
-            SaigoError::NonexistentProfile(_) => StatusCode::BAD_REQUEST,
-            SaigoError::Confy(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            SaigoError::Image(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            SaigoError::IO(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            SaigoError::Nokhwa(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-
-        (status, self.to_string()).into_response()
     }
 }

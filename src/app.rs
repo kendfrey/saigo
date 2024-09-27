@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
@@ -15,7 +12,7 @@ use nokhwa::{
     Camera,
 };
 use tokio::{
-    sync::watch,
+    sync::{watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
     time::{self, MissedTickBehavior},
 };
 
@@ -29,6 +26,8 @@ const STONE_SIZE: u32 = 16;
 /// The global state of the application.
 pub struct AppState {
     config: Config,
+    /// A proxy lock for client connections to signal that the board configuration should not be changed.
+    board_config_lock: Arc<RwLock<()>>,
     display_dirty: watch::Sender<()>,
     display_broadcast: watch::Sender<RgbaImage>,
     camera_dirty: watch::Sender<()>,
@@ -44,6 +43,7 @@ impl AppState {
         let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
         let state = Self {
             config: Config::load(None).expect("Failed to load configuration"),
+            board_config_lock: Arc::new(RwLock::new(())),
             display_dirty,
             display_broadcast,
             camera_dirty,
@@ -72,6 +72,7 @@ impl AppState {
 
     /// Loads the configuration from the specified profile.
     pub fn load_config(&mut self, profile: &str) -> Result<(), SaigoError> {
+        let _guard = self.write_board_config()?;
         self.config = Config::load(Some(profile))?;
         self.config.save(None, false)?;
         self.display_dirty.send_replace(());
@@ -86,9 +87,25 @@ impl AppState {
 
     /// Sets the board configuration.
     pub fn set_board_config(&mut self, board: BoardConfig) -> Result<(), SaigoError> {
+        let _guard = self.write_board_config()?;
         self.config.board = board;
         self.display_dirty.send_replace(());
         self.config.save_fast()
+    }
+
+    /// Locks the board configuration to prevent changes.
+    pub async fn lock_board_config(&self) -> OwnedRwLockReadGuard<()> {
+        self.board_config_lock.clone().read_owned().await
+    }
+
+    /// Checks whether the board configuration is locked.
+    pub fn write_board_config(&self) -> Result<OwnedRwLockWriteGuard<()>, SaigoError> {
+        self.board_config_lock
+            .clone()
+            .try_write_owned()
+            .map_err(|_| {
+                SaigoError::Locked("You can't edit the board size while it is in use.".to_string())
+            })
     }
 
     /// Gets the current display configuration.
@@ -199,7 +216,7 @@ impl AppState {
             let broadcast;
             let mut dirty_receiver;
             {
-                let state = state_ref.read().unwrap();
+                let state = state_ref.read().await;
                 broadcast = state.display_broadcast.clone();
                 // Subscribe to state updates
                 dirty_receiver = state.display_dirty.subscribe();
@@ -211,7 +228,7 @@ impl AppState {
                 match dirty_receiver.changed().await {
                     Ok(()) => {
                         // If the state changes, rerender the display
-                        broadcast.send_replace(render(&state_ref.read().unwrap().config));
+                        broadcast.send_replace(render(&state_ref.read().await.config));
                     }
                     Err(_) => {
                         // If the channel is closed, stop rendering
@@ -228,7 +245,7 @@ impl AppState {
             let camera_broadcast;
             let mut dirty_receiver;
             {
-                let state = state_ref.read().unwrap();
+                let state = state_ref.read().await;
                 camera_broadcast = state.camera_broadcast.clone();
                 // Subscribe to camera configuration changes that require a reset
                 dirty_receiver = state.camera_dirty.subscribe();
@@ -251,7 +268,7 @@ impl AppState {
                 // If the camera capture settings change, reset the camera
                 if dirty_receiver.has_changed().unwrap() {
                     dirty_receiver.mark_unchanged();
-                    camera = start_camera(&state_ref.read().unwrap().config.camera);
+                    camera = start_camera(&state_ref.read().await.config.camera);
                 }
 
                 // Try to capture a frame
