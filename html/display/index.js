@@ -6,6 +6,8 @@ const ctx = canvas.getContext("2d");
 const ws = new WebSocket(`ws://${location.host}/ws/display`);
 ws.addEventListener("message", onMessage);
 
+wakeLock();
+
 async function onMessage(event)
 {
 	const buffer = await event.data.arrayBuffer();
@@ -16,4 +18,16 @@ async function onMessage(event)
 	canvas.width = width;
 	canvas.height = height;
 	ctx.putImageData(imageData, 0, 0);
+}
+
+async function wakeLock()
+{
+	try
+	{
+		await navigator.wakeLock.request();
+	}
+	catch (_)
+	{
+		
+	}
 }
