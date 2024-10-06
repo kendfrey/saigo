@@ -88,6 +88,9 @@ impl AppState {
     /// Sets the board configuration.
     pub fn set_board_config(&mut self, board: BoardConfig) -> Result<(), SaigoError> {
         let _guard = self.write_board_config()?;
+        if self.config.board.width != board.width || self.config.board.height != board.height {
+            self.config.camera.reference_image = None;
+        }
         self.config.board = board;
         self.display_dirty.send_replace(());
         self.config.save_fast()
