@@ -32,22 +32,29 @@ pub struct AppState {
     display_broadcast: watch::Sender<RgbaImage>,
     camera_dirty: watch::Sender<()>,
     camera_broadcast: watch::Sender<RgbImage>,
+    board_camera_broadcast: watch::Sender<RgbImage>,
 }
 
 impl AppState {
     /// Starts a new instance of the application.
     pub fn start() -> Arc<RwLock<Self>> {
+        let config = Config::load(None).expect("Failed to load configuration");
         let (display_dirty, _) = watch::channel(());
         let (display_broadcast, _) = watch::channel(RgbaImage::new(160, 120));
         let (camera_dirty, _) = watch::channel(());
         let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
+        let (board_camera_broadcast, _) = watch::channel(RgbImage::new(
+            config.board.width.get() * STONE_SIZE,
+            config.board.height.get() * STONE_SIZE,
+        ));
         let state = Self {
-            config: Config::load(None).expect("Failed to load configuration"),
+            config,
             board_config_lock: Arc::new(RwLock::new(())),
             display_dirty,
             display_broadcast,
             camera_dirty,
             camera_broadcast,
+            board_camera_broadcast,
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
@@ -63,6 +70,11 @@ impl AppState {
     /// Returns a new receiver for the camera broadcast channel.
     pub fn subscribe_to_camera_broadcast(&self) -> watch::Receiver<RgbImage> {
         self.camera_broadcast.subscribe()
+    }
+
+    /// Returns a new receiver for the board camera broadcast channel.
+    pub fn subscribe_to_board_camera_broadcast(&self) -> watch::Receiver<RgbImage> {
+        self.board_camera_broadcast.subscribe()
     }
 
     /// Saves the current configuration to the specified profile.
@@ -149,8 +161,7 @@ impl AppState {
 
     /// Captures a reference image of the board.
     pub fn take_reference_image(&mut self) -> Result<(), SaigoError> {
-        self.config.camera.reference_image =
-            Some(self.to_board_image(&self.camera_broadcast.borrow()));
+        self.config.camera.reference_image = Some(self.board_camera_broadcast.borrow().clone());
         self.config.save_reference_image(None)
     }
 
@@ -246,10 +257,12 @@ impl AppState {
     fn spawn_camera_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let camera_broadcast;
+            let board_camera_broadcast;
             let mut dirty_receiver;
             {
                 let state = state_ref.read().await;
                 camera_broadcast = state.camera_broadcast.clone();
+                board_camera_broadcast = state.board_camera_broadcast.clone();
                 // Subscribe to camera configuration changes that require a reset
                 dirty_receiver = state.camera_dirty.subscribe();
                 dirty_receiver.mark_changed();
@@ -264,7 +277,7 @@ impl AppState {
                 interval.tick().await;
 
                 // Save work if no one is listening anyway
-                if camera_broadcast.is_closed() {
+                if camera_broadcast.is_closed() && board_camera_broadcast.is_closed() {
                     continue;
                 }
 
@@ -276,8 +289,12 @@ impl AppState {
 
                 // Try to capture a frame
                 if let Some(frame) = read_frame(camera.as_mut()) {
+                    let state = state_ref.read().await;
+                    let board_frame = state.to_board_image(&frame);
                     // Broadcast the raw frame
                     camera_broadcast.send_replace(frame);
+                    // Broadcast the board frame
+                    board_camera_broadcast.send_replace(board_frame);
                 }
             }
         });
