@@ -19,6 +19,7 @@ use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::RwLock};
+use tokio_stream::{wrappers::WatchStream, Stream, StreamExt};
 use tower_http::services::ServeDir;
 
 mod app;
@@ -32,6 +33,7 @@ async fn main() {
         .nest_service("/", ServeDir::new("html"))
         .route("/ws/display", websocket(websocket_display))
         .route("/ws/camera", websocket(websocket_camera))
+        .route("/ws/board-camera", websocket(websocket_board_camera))
         .route("/api/config/profiles", get(get_config_profiles))
         .route("/api/config/save", post(post_config_save))
         .route("/api/config/load", post(post_config_load))
@@ -60,69 +62,79 @@ async fn main() {
 }
 
 /// Watches for display updates and sends them to the client.
-async fn websocket_display(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
-    // Subscribe to display updates
-    let mut receiver = state.read().await.subscribe_to_display_broadcast();
-    receiver.mark_changed();
+async fn websocket_display(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let stream =
+        WatchStream::new(state.read().await.subscribe_to_display_broadcast()).map(serialize_image);
 
+    stream_to_socket(stream, socket).await;
+}
+
+/// Watches for camera frames and sends them to the client.
+async fn websocket_camera(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let _board_config_lock;
+    let stream;
+    {
+        let state = state.read().await;
+
+        // Lock the board configuration
+        _board_config_lock = state.lock_board_config().await;
+
+        stream = WatchStream::from_changes(state.subscribe_to_camera_broadcast())
+            .map(|image| serialize_image(image.convert()));
+    }
+
+    stream_to_socket(stream, socket).await;
+}
+
+/// Watches for board camera frames and sends them to the client.
+async fn websocket_board_camera(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let _board_config_lock;
+    let stream;
+    {
+        let state = state.read().await;
+
+        // Lock the board configuration
+        _board_config_lock = state.lock_board_config().await;
+
+        stream = WatchStream::from_changes(state.subscribe_to_board_camera_broadcast())
+            .map(|image| serialize_image(image.convert()));
+    }
+
+    stream_to_socket(stream, socket).await;
+}
+
+/// Sends updates to the client.
+async fn stream_to_socket(
+    mut stream: impl Stream<Item = Message> + Unpin + Send,
+    mut socket: WebSocket,
+) {
     loop {
-        // Wait for a new frame to be available
-        match receiver.changed().await {
-            Ok(()) => {
-                // If a new frame is available, send it to the client
-                let image = receiver.borrow_and_update().clone();
-                let mut data = vec![];
-                data.extend(image.width().to_be_bytes()); // The first 4 bytes are the width
-                data.extend(image.height().to_be_bytes()); // The next 4 bytes are the height
-                data.extend(image.into_raw()); // The rest is the image data
-                match socket.send(Message::Binary(data)).await {
-                    Ok(()) => {}
-                    Err(_) => {
-                        // If the message fails to send, close the socket
-                        return;
-                    }
+        // Wait for a new update to be available
+        match stream.next().await {
+            Some(message) => {
+                if socket.send(message).await.is_err() {
+                    // If the message fails to send, close the socket
+                    return;
                 }
             }
-            Err(_) => {
-                // If the image broadcast channel is closed, close the socket
+            None => {
+                // If the stream is closed, close the socket
                 return;
             }
         }
     }
 }
 
-/// Watches for camera frames and sends them to the client.
-async fn websocket_camera(state: Arc<RwLock<AppState>>, mut socket: WebSocket) {
-    // Subscribe to camera frames
-    let mut receiver = state.read().await.subscribe_to_camera_broadcast();
-
-    // Lock the board configuration
-    let _board_config_lock = state.read().await.lock_board_config().await;
-
-    loop {
-        // Wait for a new frame to be available
-        match receiver.changed().await {
-            Ok(()) => {
-                // If a new frame is available, send it to the client
-                let image: RgbaImage = receiver.borrow_and_update().convert();
-                let mut data = vec![];
-                data.extend(image.width().to_be_bytes()); // The first 4 bytes are the width
-                data.extend(image.height().to_be_bytes()); // The next 4 bytes are the height
-                data.extend(image.into_raw()); // The rest is the image data
-                match socket.send(Message::Binary(data)).await {
-                    Ok(()) => {}
-                    Err(_) => {
-                        // If the message fails to send, close the socket
-                        return;
-                    }
-                }
-            }
-            Err(_) => {
-                // If the camera broadcast channel is closed, close the socket
-                return;
-            }
-        }
-    }
+/// Serializes an image into a binary message.
+/// The first 4 bytes of the message are the width of the image.
+/// The next 4 bytes are the height of the image.
+/// The rest of the message is the image data, in 32-bit RGBA format.
+fn serialize_image(image: RgbaImage) -> Message {
+    let mut data = vec![];
+    data.extend(image.width().to_be_bytes()); // The first 4 bytes are the width
+    data.extend(image.height().to_be_bytes()); // The next 4 bytes are the height
+    data.extend(image.into_raw()); // The rest is the image data
+    Message::Binary(data)
 }
 
 /// Gets the list of available configuration profiles.
