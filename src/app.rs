@@ -16,7 +16,10 @@ use tokio::{
     time::{self, MissedTickBehavior},
 };
 
-use crate::error::SaigoError;
+use crate::{
+    error::SaigoError,
+    sync::{OwnedSender, SenderLock},
+};
 
 pub mod config;
 
@@ -28,6 +31,7 @@ pub struct AppState {
     config: Config,
     /// A proxy lock for client connections to signal that the board configuration should not be changed.
     board_config_lock: Arc<RwLock<()>>,
+    display_state: Arc<SenderLock<DisplayState>>,
     display_dirty: watch::Sender<()>,
     display_broadcast: watch::Sender<RgbaImage>,
     camera_dirty: watch::Sender<()>,
@@ -39,6 +43,7 @@ impl AppState {
     /// Starts a new instance of the application.
     pub fn start() -> Arc<RwLock<Self>> {
         let config = Config::load(None).expect("Failed to load configuration");
+        let (display_state, _) = watch::channel(DisplayState::default());
         let (display_dirty, _) = watch::channel(());
         let (display_broadcast, _) = watch::channel(RgbaImage::new(160, 120));
         let (camera_dirty, _) = watch::channel(());
@@ -50,6 +55,7 @@ impl AppState {
         let state = Self {
             config,
             board_config_lock: Arc::new(RwLock::new(())),
+            display_state: Arc::new(SenderLock::new(display_state)),
             display_dirty,
             display_broadcast,
             camera_dirty,
@@ -165,6 +171,11 @@ impl AppState {
         self.config.save_reference_image(None)
     }
 
+    /// Tries to take control of the display state.
+    pub fn try_own_display_state(&self) -> Option<OwnedSender<DisplayState>> {
+        self.display_state.clone().try_own()
+    }
+
     /// Transforms the camera image to the normalized board image.
     fn to_board_image(&self, frame: &RgbImage) -> RgbImage {
         // Buffer to copy the board image to
@@ -228,21 +239,33 @@ impl AppState {
     fn spawn_render_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let broadcast;
-            let mut dirty_receiver;
+            let mut display_state_receiver;
+            let mut display_dirty_receiver;
             {
                 let state = state_ref.read().await;
                 broadcast = state.display_broadcast.clone();
                 // Subscribe to state updates
-                dirty_receiver = state.display_dirty.subscribe();
-                dirty_receiver.mark_changed();
+                display_state_receiver = state.display_state.subscribe();
+                display_state_receiver.mark_changed();
+                // Subscribe to display configuration changes
+                display_dirty_receiver = state.display_dirty.subscribe();
+                display_dirty_receiver.mark_changed();
             }
 
             // Wait for the state to update
             loop {
-                match dirty_receiver.changed().await {
+                let result = tokio::select! {
+                    r = display_state_receiver.changed() => r,
+                    r = display_dirty_receiver.changed() => r,
+                };
+                match result {
                     Ok(()) => {
                         // If the state changes, rerender the display
-                        broadcast.send_replace(render(&state_ref.read().await.config));
+                        display_state_receiver.mark_unchanged();
+                        display_dirty_receiver.mark_unchanged();
+                        let display_state = *display_state_receiver.borrow();
+                        let state = state_ref.read().await;
+                        broadcast.send_replace(state.render(display_state));
                     }
                     Err(_) => {
                         // If the channel is closed, stop rendering
@@ -299,110 +322,149 @@ impl AppState {
             }
         });
     }
-}
 
-/// Renders the display.
-fn render(config: &Config) -> RgbaImage {
-    let raw = render_raw(config);
-    let proj = get_display_projection(config);
-    warp(&raw, &proj, Interpolation::Bilinear, Rgba([0, 0, 0, 0]))
-}
-
-/// Renders the display in a normalized position.
-/// This will later be warped according to the display configuration.
-fn render_raw(config: &Config) -> RgbaImage {
-    let stone_size = stone_size(config);
-    let origin_x = (config.display.image_width.get() as f32
-        - stone_size * config.board.width.get() as f32)
-        * 0.5;
-    let origin_y = (config.display.image_height.get() as f32
-        - stone_size * config.board.height.get() as f32)
-        * 0.5;
-
-    // Draw a dot on every intersection
-    let mut img = RgbaImage::new(
-        config.display.image_width.get(),
-        config.display.image_height.get(),
-    );
-    for x in 0..config.board.width.get() {
-        for y in 0..config.board.height.get() {
-            let ctr_x = origin_x + (x as f32 + 0.5) * stone_size;
-            let ctr_y = origin_y + (y as f32 + 0.5) * stone_size;
-            draw_filled_circle_mut(
-                &mut img,
-                (ctr_x as i32, ctr_y as i32),
-                (stone_size * 0.125) as i32,
-                Rgba([255, 255, 255, 255]),
-            );
-        }
+    /// Renders the display.
+    fn render(&self, display_state: DisplayState) -> RgbaImage {
+        let raw = self.render_raw(display_state);
+        let proj = self.get_display_projection();
+        warp(&raw, &proj, Interpolation::Bilinear, Rgba([0, 0, 0, 0]))
     }
 
-    // Draw a green circle in the top left corner for orientation
-    let ctr_x = origin_x + stone_size * 0.5;
-    let ctr_y = origin_y + stone_size * 0.5;
-    draw_filled_circle_mut(
-        &mut img,
-        (ctr_x as i32, ctr_y as i32),
-        (stone_size * 0.25) as i32,
-        Rgba([0, 255, 0, 255]),
-    );
+    /// Renders the display in a normalized position.
+    /// This will later be warped according to the display configuration.
+    fn render_raw(&self, display_state: DisplayState) -> RgbaImage {
+        let mut img = RgbaImage::new(
+            self.config.display.image_width.get(),
+            self.config.display.image_height.get(),
+        );
+        let stone_size = self.stone_size();
+        let origin_x = (self.config.display.image_width.get() as f32
+            - stone_size * (self.config.board.width.get() - 1) as f32)
+            * 0.5;
+        let origin_y = (self.config.display.image_height.get() as f32
+            - stone_size * (self.config.board.height.get() - 1) as f32)
+            * 0.5;
 
-    // Draw a red circle in the top right corner for orientation
-    let ctr_x = origin_x + (config.board.height.get() as f32 - 0.5) * stone_size;
-    let ctr_y = origin_y + stone_size * 0.5;
-    draw_filled_circle_mut(
-        &mut img,
-        (ctr_x as i32, ctr_y as i32),
-        (stone_size * 0.25) as i32,
-        Rgba([255, 0, 0, 255]),
-    );
+        match display_state {
+            DisplayState::Calibrate => {
+                self.render_calibrate(&mut img, stone_size, origin_x, origin_y);
+            }
+            DisplayState::Training(seed) => {
+                self.render_training(seed, &mut img, stone_size, origin_x, origin_y);
+            }
+        }
 
-    img
+        img
+    }
+
+    /// Renders the calibration pattern.
+    fn render_calibrate(&self, img: &mut RgbaImage, stone_size: f32, origin_x: f32, origin_y: f32) {
+        // Draw a dot on every intersection
+        for x in 0..self.config.board.width.get() {
+            for y in 0..self.config.board.height.get() {
+                let ctr_x = origin_x + x as f32 * stone_size;
+                let ctr_y = origin_y + y as f32 * stone_size;
+                draw_filled_circle_mut(
+                    img,
+                    (ctr_x as i32, ctr_y as i32),
+                    (stone_size * 0.125) as i32,
+                    Rgba([255, 255, 255, 255]),
+                );
+            }
+        }
+
+        // Draw a green circle in the top left corner for orientation
+        let ctr_x = origin_x;
+        let ctr_y = origin_y;
+        draw_filled_circle_mut(
+            img,
+            (ctr_x as i32, ctr_y as i32),
+            (stone_size * 0.25) as i32,
+            Rgba([0, 255, 0, 255]),
+        );
+
+        // Draw a red circle in the top right corner for orientation
+        let ctr_x = origin_x + (self.config.board.height.get() - 1) as f32 * stone_size;
+        let ctr_y = origin_y;
+        draw_filled_circle_mut(
+            img,
+            (ctr_x as i32, ctr_y as i32),
+            (stone_size * 0.25) as i32,
+            Rgba([255, 0, 0, 255]),
+        );
+    }
+
+    /// Renders a random pattern for training the neural network.
+    fn render_training(
+        &self,
+        _seed: u64,
+        img: &mut RgbaImage,
+        stone_size: f32,
+        origin_x: f32,
+        origin_y: f32,
+    ) {
+        // TODO
+        draw_filled_circle_mut(
+            img,
+            (origin_x as i32, origin_y as i32),
+            (stone_size * 0.5) as i32,
+            Rgba([255, 0, 255, 255]),
+        );
+    }
+
+    /// Returns the projection matrix that maps the display to the screen.
+    fn get_display_projection(&self) -> Projection {
+        let stone_size = self.stone_size();
+        let ctr = Projection::translate(
+            self.config.display.image_width.get() as f32 * -0.5,
+            self.config.display.image_height.get() as f32 * -0.5,
+        );
+        let perspective = Projection::from_matrix([
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            self.config.display.perspective_x / (stone_size * self.config.board.width.get() as f32),
+            self.config.display.perspective_y
+                / (stone_size * self.config.board.height.get() as f32),
+            1.0,
+        ])
+        .unwrap_or(Projection::scale(1.0, 1.0));
+        let scale = Projection::scale(self.config.display.width, self.config.display.height);
+        let translation_scale = u32::max(
+            self.config.display.image_width.get(),
+            self.config.display.image_height.get(),
+        ) as f32
+            * 0.5;
+        let translate = Projection::translate(
+            self.config.display.x * translation_scale,
+            self.config.display.y * translation_scale,
+        );
+        let rotate = Projection::rotate(self.config.display.angle.to_radians());
+        ctr.and_then(perspective)
+            .and_then(scale)
+            .and_then(translate)
+            .and_then(rotate)
+            .and_then(ctr.invert())
+    }
+
+    /// Helper function for calculating the size of a stone on the display.
+    fn stone_size(&self) -> f32 {
+        f32::min(
+            self.config.display.image_width.get() as f32 / self.config.board.width.get() as f32,
+            self.config.display.image_height.get() as f32 / self.config.board.height.get() as f32,
+        )
+    }
 }
 
-/// Returns the projection matrix that maps the display to the screen.
-fn get_display_projection(config: &Config) -> Projection {
-    let stone_size = stone_size(config);
-    let ctr = Projection::translate(
-        config.display.image_width.get() as f32 * -0.5,
-        config.display.image_height.get() as f32 * -0.5,
-    );
-    let perspective = Projection::from_matrix([
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        config.display.perspective_x / (stone_size * config.board.width.get() as f32),
-        config.display.perspective_y / (stone_size * config.board.height.get() as f32),
-        1.0,
-    ])
-    .unwrap_or(Projection::scale(1.0, 1.0));
-    let scale = Projection::scale(config.display.width, config.display.height);
-    let translation_scale = u32::max(
-        config.display.image_width.get(),
-        config.display.image_height.get(),
-    ) as f32
-        * 0.5;
-    let translate = Projection::translate(
-        config.display.x * translation_scale,
-        config.display.y * translation_scale,
-    );
-    let rotate = Projection::rotate(config.display.angle.to_radians());
-    ctr.and_then(perspective)
-        .and_then(scale)
-        .and_then(translate)
-        .and_then(rotate)
-        .and_then(ctr.invert())
-}
-
-/// Helper function for calculating the size of a stone on the display.
-fn stone_size(config: &Config) -> f32 {
-    f32::min(
-        config.display.image_width.get() as f32 / config.board.width.get() as f32,
-        config.display.image_height.get() as f32 / config.board.height.get() as f32,
-    )
+/// The pattern or information displayed on the screen.
+#[derive(Clone, Copy, Default)]
+pub enum DisplayState {
+    #[default]
+    Calibrate,
+    Training(u64),
 }
 
 /// Tries to start capturing from a camera based on the configuration.

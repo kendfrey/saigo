@@ -2,7 +2,7 @@ use std::{future::Future, io::Cursor, sync::Arc};
 
 use app::{
     config::{self, BoardConfig, CameraConfig, Config, DisplayConfig},
-    AppState,
+    AppState, DisplayState,
 };
 use axum::{
     extract::{
@@ -18,12 +18,14 @@ use error::SaigoError;
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use serde::Deserialize;
+use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_stream::{wrappers::WatchStream, Stream, StreamExt};
 use tower_http::services::ServeDir;
 
 mod app;
 mod error;
+mod sync;
 
 #[tokio::main]
 async fn main() {
@@ -32,6 +34,7 @@ async fn main() {
     let app = Router::new()
         .nest_service("/", ServeDir::new("html"))
         .route("/ws/display", websocket(websocket_display))
+        .route("/ws/control", get(get_websocket_control))
         .route("/ws/camera", websocket(websocket_camera))
         .route("/ws/board-camera", websocket(websocket_board_camera))
         .route("/api/config/profiles", get(get_config_profiles))
@@ -67,6 +70,39 @@ async fn websocket_display(state: Arc<RwLock<AppState>>, socket: WebSocket) {
         WatchStream::new(state.read().await.subscribe_to_display_broadcast()).map(serialize_image);
 
     stream_to_socket(stream, socket).await;
+}
+
+/// Handles the control websocket connection by rejecting if there is an existing connection.
+async fn get_websocket_control(
+    State(state): State<Arc<RwLock<AppState>>>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse> {
+    let display_state = state.read().await.try_own_display_state();
+    match display_state {
+        Some(display_state) => {
+            Ok(ws.on_upgrade(move |socket| websocket_control(state, display_state, socket)))
+        }
+        None => Err(SaigoError::Locked("Another client already has control.".to_string()).into()),
+    }
+}
+
+/// Allows a single client to control the display.
+async fn websocket_control(
+    state: Arc<RwLock<AppState>>,
+    display_state: OwnedSender<DisplayState>,
+    mut socket: WebSocket,
+) {
+    // Lock the board configuration
+    let _board_config_lock = state.read().await.lock_board_config().await;
+
+    // TODO
+    display_state.send(DisplayState::Training(0));
+
+    loop {
+        if socket.recv().await.is_none() {
+            return;
+        }
+    }
 }
 
 /// Watches for camera frames and sends them to the client.
