@@ -11,6 +11,8 @@ use nokhwa::{
     utils::{ApiBackend, CameraFormat, RequestedFormat, RequestedFormatType, Resolution},
     Camera,
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
+use saigo::STONE_SIZE;
 use tokio::{
     sync::{watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
     time::{self, MissedTickBehavior},
@@ -22,9 +24,6 @@ use crate::{
 };
 
 pub mod config;
-
-/// The width of a stone in pixels on the normalized image of the board.
-const STONE_SIZE: u32 = 16;
 
 /// The global state of the application.
 pub struct AppState {
@@ -397,16 +396,23 @@ impl AppState {
     /// Renders a random pattern for training the neural network.
     fn render_training(
         &self,
-        _seed: u64,
+        seed: <StdRng as SeedableRng>::Seed,
         img: &mut RgbaImage,
         stone_size: f32,
         origin_x: f32,
         origin_y: f32,
     ) {
         // TODO
+        let mut rng = StdRng::from_seed(seed);
+
+        let x = rng.gen_range(0..self.config.board.width.get());
+        let y = rng.gen_range(0..self.config.board.height.get());
         draw_filled_circle_mut(
             img,
-            (origin_x as i32, origin_y as i32),
+            (
+                (origin_x + x as f32 * stone_size) as i32,
+                (origin_y + y as f32 * stone_size) as i32,
+            ),
             (stone_size * 0.5) as i32,
             Rgba([255, 0, 255, 255]),
         );
@@ -464,7 +470,7 @@ impl AppState {
 pub enum DisplayState {
     #[default]
     Calibrate,
-    Training(u64),
+    Training(<StdRng as SeedableRng>::Seed),
 }
 
 /// Tries to start capturing from a camera based on the configuration.

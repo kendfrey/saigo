@@ -1881,11 +1881,13 @@ dependencies = [
  "image",
  "imageproc",
  "nokhwa",
+ "rand",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tower-http",
+ "tungstenite",
 ]
 
 [[package]]

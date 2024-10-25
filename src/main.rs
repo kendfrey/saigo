@@ -17,6 +17,8 @@ use axum::{
 use error::SaigoError;
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
+use rand::{rngs::StdRng, Rng, SeedableRng};
+use saigo::ControlMessage;
 use serde::Deserialize;
 use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
@@ -95,12 +97,25 @@ async fn websocket_control(
     // Lock the board configuration
     let _board_config_lock = state.read().await.lock_board_config().await;
 
-    // TODO
-    display_state.send(DisplayState::Training(0));
+    let mut rng = StdRng::from_entropy();
 
     loop {
-        if socket.recv().await.is_none() {
-            return;
+        match socket.recv().await {
+            Some(Ok(message)) => match message {
+                Message::Text(json) => {
+                    match serde_json::from_str(&json) {
+                        Ok(control_message) => match control_message {
+                            ControlMessage::NewTrainingPattern => {
+                                // Reseed the RNG to generate a new training pattern
+                                display_state.send(DisplayState::Training(rng.gen()));
+                            }
+                        },
+                        Err(_) => continue,
+                    };
+                }
+                _ => continue,
+            },
+            _ => return,
         }
     }
 }
