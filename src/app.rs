@@ -3,8 +3,9 @@ use std::{sync::Arc, time::Duration};
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
 use imageproc::{
-    drawing::draw_filled_circle_mut,
+    drawing::{draw_filled_circle_mut, draw_polygon_mut},
     geometric_transformations::{warp, warp_into, Interpolation, Projection},
+    point::Point,
 };
 use nokhwa::{
     pixel_format::RgbFormat,
@@ -332,7 +333,23 @@ impl AppState {
     /// Renders the display in a normalized position.
     /// This will later be warped according to the display configuration.
     fn render_raw(&self, display_state: DisplayState) -> RgbaImage {
-        let mut img = RgbaImage::new(
+        let mut ctx = self.create_rendering_context();
+
+        match display_state {
+            DisplayState::Calibrate => {
+                self.render_calibrate(&mut ctx);
+            }
+            DisplayState::Training(seed) => {
+                self.render_training(seed, &mut ctx);
+            }
+        }
+
+        ctx.into_image()
+    }
+
+    /// Creates a new rendering context.
+    fn create_rendering_context(&self) -> RenderingContext {
+        let img = RgbaImage::new(
             self.config.display.image_width.get(),
             self.config.display.image_height.get(),
         );
@@ -344,78 +361,70 @@ impl AppState {
             - stone_size * (self.config.board.height.get() - 1) as f32)
             * 0.5;
 
-        match display_state {
-            DisplayState::Calibrate => {
-                self.render_calibrate(&mut img, stone_size, origin_x, origin_y);
-            }
-            DisplayState::Training(seed) => {
-                self.render_training(seed, &mut img, stone_size, origin_x, origin_y);
-            }
+        RenderingContext {
+            img,
+            stone_size,
+            origin_x,
+            origin_y,
         }
-
-        img
     }
 
     /// Renders the calibration pattern.
-    fn render_calibrate(&self, img: &mut RgbaImage, stone_size: f32, origin_x: f32, origin_y: f32) {
+    fn render_calibrate(&self, ctx: &mut RenderingContext) {
         // Draw a dot on every intersection
         for x in 0..self.config.board.width.get() {
             for y in 0..self.config.board.height.get() {
-                let ctr_x = origin_x + x as f32 * stone_size;
-                let ctr_y = origin_y + y as f32 * stone_size;
-                draw_filled_circle_mut(
-                    img,
-                    (ctr_x as i32, ctr_y as i32),
-                    (stone_size * 0.125) as i32,
-                    Rgba([255, 255, 255, 255]),
-                );
+                ctx.fill_circle(x as f32, y as f32, 0.25, Rgba([255, 255, 255, 255]));
             }
         }
 
         // Draw a green circle in the top left corner for orientation
-        let ctr_x = origin_x;
-        let ctr_y = origin_y;
-        draw_filled_circle_mut(
-            img,
-            (ctr_x as i32, ctr_y as i32),
-            (stone_size * 0.25) as i32,
-            Rgba([0, 255, 0, 255]),
-        );
+        ctx.fill_circle(0.0, 0.0, 0.5, Rgba([0, 255, 0, 255]));
 
         // Draw a red circle in the top right corner for orientation
-        let ctr_x = origin_x + (self.config.board.height.get() - 1) as f32 * stone_size;
-        let ctr_y = origin_y;
-        draw_filled_circle_mut(
-            img,
-            (ctr_x as i32, ctr_y as i32),
-            (stone_size * 0.25) as i32,
+        ctx.fill_circle(
+            self.config.board.width.get() as f32 - 1.0,
+            0.0,
+            0.5,
             Rgba([255, 0, 0, 255]),
         );
     }
 
     /// Renders a random pattern for training the neural network.
-    fn render_training(
-        &self,
-        seed: <StdRng as SeedableRng>::Seed,
-        img: &mut RgbaImage,
-        stone_size: f32,
-        origin_x: f32,
-        origin_y: f32,
-    ) {
-        // TODO
+    fn render_training(&self, seed: <StdRng as SeedableRng>::Seed, ctx: &mut RenderingContext) {
         let mut rng = StdRng::from_seed(seed);
 
-        let x = rng.gen_range(0..self.config.board.width.get());
-        let y = rng.gen_range(0..self.config.board.height.get());
-        draw_filled_circle_mut(
-            img,
-            (
-                (origin_x + x as f32 * stone_size) as i32,
-                (origin_y + y as f32 * stone_size) as i32,
-            ),
-            (stone_size * 0.5) as i32,
-            Rgba([255, 0, 255, 255]),
+        for x in 0..self.config.board.width.get() {
+            for y in 0..self.config.board.height.get() {
+                if rng.gen_bool(0.1) {
+                    let size = rng.gen_range(0.0..1.0);
+                    let color = random_color(&mut rng);
+                    ctx.fill_circle(x as f32, y as f32, size, color);
+                }
+            }
+        }
+
+        let x1 = rng.gen_range(0.0..self.config.board.width.get() as f32);
+        let y1 = rng.gen_range(0.0..self.config.board.height.get() as f32);
+        let x2 = rng.gen_range(0.0..self.config.board.width.get() as f32);
+        let y2 = rng.gen_range(0.0..self.config.board.height.get() as f32);
+        let x3 = rng.gen_range(0.0..self.config.board.width.get() as f32);
+        let y3 = rng.gen_range(0.0..self.config.board.height.get() as f32);
+        let color = random_color(&mut rng);
+
+        ctx.fill_polygon(
+            &[Point::new(x1, y1), Point::new(x2, y2), Point::new(x3, y3)],
+            color,
         );
+
+        fn random_color(rng: &mut StdRng) -> Rgba<u8> {
+            Rgba([
+                rng.gen_range(0..=255),
+                rng.gen_range(0..=255),
+                rng.gen_range(0..=255),
+                255,
+            ])
+        }
     }
 
     /// Returns the projection matrix that maps the display to the screen.
@@ -471,6 +480,45 @@ pub enum DisplayState {
     #[default]
     Calibrate,
     Training(<StdRng as SeedableRng>::Seed),
+}
+
+/// Helper struct for rendering the display.
+struct RenderingContext {
+    img: RgbaImage,
+    stone_size: f32,
+    origin_x: f32,
+    origin_y: f32,
+}
+
+impl RenderingContext {
+    /// Draws a filled circle.
+    fn fill_circle(&mut self, x: f32, y: f32, size: f32, color: Rgba<u8>) {
+        let ctr_x = self.origin_x + x * self.stone_size;
+        let ctr_y = self.origin_y + y * self.stone_size;
+        draw_filled_circle_mut(
+            &mut self.img,
+            (ctr_x as i32, ctr_y as i32),
+            (self.stone_size * 0.5 * size) as i32,
+            color,
+        );
+    }
+
+    /// Draws a filled polygon.
+    fn fill_polygon(&mut self, points: &[Point<f32>], color: Rgba<u8>) {
+        let mapped_points = points
+            .iter()
+            .map(|point| Point {
+                x: (self.origin_x + point.x * self.stone_size) as i32,
+                y: (self.origin_y + point.y * self.stone_size) as i32,
+            })
+            .collect::<Vec<_>>();
+        draw_polygon_mut(&mut self.img, mapped_points.as_slice(), color);
+    }
+
+    /// Converts the rendering context into an image.
+    fn into_image(self) -> RgbaImage {
+        self.img
+    }
 }
 
 /// Tries to start capturing from a camera based on the configuration.

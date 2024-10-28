@@ -9,6 +9,6 @@ fn main() {
     loop {
         let json = serde_json::to_string(&ControlMessage::NewTrainingPattern).unwrap();
         _ = socket.send(Message::Text(json));
-        sleep(Duration::from_secs(1));
+        sleep(Duration::from_secs(2));
     }
 }
