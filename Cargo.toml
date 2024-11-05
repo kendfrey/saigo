@@ -7,11 +7,13 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.7.5", features = ["macros", "ws"] }
+clap = { version = "4.5.20", features = ["derive"] }
 confy = "0.6.1"
 image = "0.25.2"
 imageproc = "0.25.0"
 nokhwa = { version = "0.10.5", features = ["input-native", "output-threaded"] }
 rand = "0.8.5"
+reqwest = { version = "0.12.9", features = ["blocking"] }
 serde = { version = "1.0.206", features = ["derive"] }
 serde_json = "1.0.124"
 tokio = { version = "1.39.2", features = ["rt-multi-thread"] }
