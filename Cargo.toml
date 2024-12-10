@@ -17,6 +17,6 @@ reqwest = { version = "0.12.9", features = ["blocking"] }
 serde = { version = "1.0.206", features = ["derive"] }
 serde_json = "1.0.124"
 tokio = { version = "1.39.2", features = ["rt-multi-thread"] }
-tokio-stream = { version = "0.1.16", features = ["sync"] }
+tokio-stream = { version = "0.1.16", features = ["fs", "sync"] }
 tower-http = { version = "0.5.2", features = ["fs"] }
 tungstenite = "0.24.0"

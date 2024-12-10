@@ -33,6 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .error_for_status()?
         .copy_to(&mut File::create_new(args.out.join("reference.png"))?)?;
 
+    println!("Press Ctrl+C to exit.");
+
     let interval = Duration::from_secs(5);
     let mut next_capture = Instant::now() + interval;
     let mut num = 0;

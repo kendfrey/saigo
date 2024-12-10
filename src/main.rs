@@ -34,7 +34,7 @@ async fn main() {
     nokhwa::nokhwa_initialize(|_| {});
     let state = AppState::start();
     let app = Router::new()
-        .nest_service("/", ServeDir::new("html"))
+        .nest_service("/", ServeDir::new("html/saigo"))
         .route("/ws/display", websocket(websocket_display))
         .route("/ws/control", get(get_websocket_control))
         .route("/ws/camera", websocket(websocket_camera))
@@ -63,6 +63,11 @@ async fn main() {
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:5410").await.unwrap();
+    println!(
+        "Listening on http://localhost:{}/",
+        listener.local_addr().unwrap().port()
+    );
+    println!("Press Ctrl+C to exit.");
     axum::serve(listener, app).await.unwrap();
 }
 
