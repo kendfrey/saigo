@@ -23,6 +23,7 @@ const ctx = canvas.getContext("2d");
 
 const take_reference_image = document.getElementById("take_reference_image");
 const reference = document.getElementById("reference");
+const referenceCtx = reference.getContext("2d");
 take_reference_image.addEventListener("click", () => getReferenceImage(true));
 
 let imageData;
@@ -176,6 +177,18 @@ async function getReferenceImage(take = false)
 		method: "POST",
 	});
 	const response = await fetch(request);
-	const url = URL.createObjectURL(await response.blob());
-	reference.src = url;
+	const image = await createImageBitmap(await response.blob());
+	const w = reference.width = image.width;
+	const h = reference.height = image.height;
+	referenceCtx.drawImage(image, 0, 0, w, h);
+
+	const STONE_SIZE = 16;
+	for (let y = 0; y < h / STONE_SIZE; y++)
+	{
+		for (let x = 0; x < w / STONE_SIZE; x++)
+		{
+			referenceCtx.fillStyle = "black";
+			referenceCtx.fillRect((x + 0.5) * STONE_SIZE - 1, (y + 0.5) * STONE_SIZE - 1, 2, 2);
+		}
+	}
 }
