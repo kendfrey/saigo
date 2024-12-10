@@ -164,19 +164,10 @@ async fn stream_to_socket(
     mut stream: impl Stream<Item = Message> + Unpin + Send,
     mut socket: WebSocket,
 ) {
-    loop {
-        // Wait for a new update to be available
-        match stream.next().await {
-            Some(message) => {
-                if socket.send(message).await.is_err() {
-                    // If the message fails to send, close the socket
-                    return;
-                }
-            }
-            None => {
-                // If the stream is closed, close the socket
-                return;
-            }
+    while let Some(message) = stream.next().await {
+        if socket.send(message).await.is_err() {
+            // If the message fails to send, close the socket
+            return;
         }
     }
 }
