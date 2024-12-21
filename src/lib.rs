@@ -1,6 +1,8 @@
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
+pub mod vision_model;
+
 /// The width of a stone in pixels on the normalized image of the board.
 pub const STONE_SIZE: u32 = 16;
 

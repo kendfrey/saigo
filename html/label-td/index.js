@@ -87,6 +87,7 @@ async function loadCurrent()
 	else
 	{
 		currentLabels = structuredClone(currentBoard);
+		updateLabels();
 	}
 
 	render();
