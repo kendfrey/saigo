@@ -1,11 +1,11 @@
 use rand::{seq::SliceRandom, thread_rng};
 use tch::{Device, Tensor};
 
-use crate::dataset::{Dataset, DatasetSampleIndex};
+use crate::dataset::Dataset;
 
 struct SampleIndex {
     dataset: usize,
-    index: DatasetSampleIndex,
+    index: usize,
 }
 
 pub struct DataLoader<'a> {
@@ -20,10 +20,7 @@ impl<'a> DataLoader<'a> {
     pub fn new(datasets: &'a Vec<Dataset>, batch_size: usize, device: Device) -> Self {
         let mut indexes = Vec::new();
         for (i, dataset) in datasets.iter().enumerate() {
-            indexes.extend(dataset.indexes().iter().map(|index| SampleIndex {
-                dataset: i,
-                index: *index,
-            }));
+            indexes.extend((0..dataset.len()).map(|index| SampleIndex { dataset: i, index }));
         }
         indexes.shuffle(&mut thread_rng());
         Self {
@@ -48,7 +45,10 @@ impl<'a> Iterator for DataLoader<'a> {
         let batch_indexes = &self.indexes[self.index..end_index];
         let (samples, labels): (Vec<_>, Vec<_>) = batch_indexes
             .iter()
-            .map(|SampleIndex { dataset, index }| self.datasets[*dataset].get(*index))
+            .map(|SampleIndex { dataset, index }| {
+                let (sample, label) = &self.datasets[*dataset][*index];
+                (sample, label)
+            })
             .unzip();
         self.index = end_index;
         Some((

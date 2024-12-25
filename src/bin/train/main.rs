@@ -4,7 +4,7 @@ use dataset::Dataset;
 use saigo::vision_model::VisionModel;
 use std::{
     fs::{self, read_dir},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -32,9 +32,9 @@ fn main() {
         let mut obscured = 0.0;
         let mut total = 0.0;
         for dataset in &datasets {
-            for i in dataset.indexes() {
+            for i in 0..dataset.len() {
                 total += 1.0;
-                let label = dataset.get(i).1.int64_value(&[]);
+                let label = dataset[i].1.int64_value(&[]);
                 match label {
                     0 => none += 1.0,
                     1 => black += 1.0,
@@ -48,6 +48,7 @@ fn main() {
         println!("  Black: {}", black / total);
         println!("  White: {}", white / total);
         println!("  Obscured: {}", obscured / total);
+        println!("  Total: {}", total);
     }
     println!("Finished loading {} datasets", datasets.len());
 
@@ -73,7 +74,7 @@ fn main() {
         let mut total_count = 0.0;
         let mut total_loss = 0.0;
         let mut total_acc = 0.0;
-        for batch in DataLoader::new(&datasets, 256, device) {
+        for batch in DataLoader::new(&datasets, 1024, device) {
             let (samples, labels) = batch;
             let outputs = model.forward(&samples);
             let loss = outputs.cross_entropy_for_logits(&labels);
@@ -107,7 +108,7 @@ fn main() {
     }
 }
 
-fn load_datasets_recursively(dir: &PathBuf, datasets: &mut Vec<Dataset>) {
+fn load_datasets_recursively(dir: &Path, datasets: &mut Vec<Dataset>) {
     if let Some(dataset) = Dataset::load(dir) {
         datasets.push(dataset);
     }
