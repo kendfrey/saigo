@@ -31,6 +31,7 @@ pub struct Dataset {
     pub path: PathBuf,
     width: u32,
     height: u32,
+    image_names: Vec<String>,
     samples: Vec<(Tensor, Tensor)>,
 }
 
@@ -40,10 +41,11 @@ impl Dataset {
         println!("  {}", dir.display());
         let width = reference.width() / STONE_SIZE;
         let height = reference.height() / STONE_SIZE;
+        let mut image_names = Vec::new();
         let mut samples = Vec::new();
 
         for entry in dir.read_dir().ok()?.flatten() {
-            if let Some((img, labels)) = load_file(entry, width, height) {
+            if let Some((name, img, labels)) = load_file(entry, width, height) {
                 for iy in 0..height {
                     for ix in 0..width {
                         let mut sample = [0.0; (6 * STONE_SIZE * STONE_SIZE) as usize];
@@ -82,6 +84,7 @@ impl Dataset {
                         samples.push((sample, label));
                     }
                 }
+                image_names.push(name);
             }
         }
 
@@ -89,12 +92,25 @@ impl Dataset {
             path: dir.to_path_buf(),
             width,
             height,
+            image_names,
             samples,
         })
     }
 
     pub fn len(&self) -> usize {
         self.samples.len()
+    }
+
+    pub fn locate(&self, index: usize) -> String {
+        let index = index as u32;
+        let x = index % self.width;
+        let index = index / self.width;
+        let y = index % self.height;
+        let image = index / self.height;
+        format!(
+            "Image: {} X: {} Y: {}",
+            self.image_names[image as usize], x, y
+        )
     }
 }
 
@@ -105,20 +121,23 @@ impl Index<usize> for Dataset {
     }
 }
 
-fn load_file(entry: DirEntry, width: u32, height: u32) -> Option<(Rgb32FImage, Vec<Label>)> {
-    if entry.path().extension()? != "txt" {
+fn load_file(
+    entry: DirEntry,
+    width: u32,
+    height: u32,
+) -> Option<(String, Rgb32FImage, Vec<Label>)> {
+    let path = entry.path();
+    if path.extension()? != "txt" {
         return None;
     }
 
-    let labels: Vec<Label> = read_to_string(entry.path())
+    let labels: Vec<Label> = read_to_string(&path)
         .ok()?
         .chars()
         .map(Label::from)
         .collect();
 
-    let image = image::open(entry.path().with_extension("png"))
-        .ok()?
-        .into_rgb32f();
+    let image = image::open(path.with_extension("png")).ok()?.into_rgb32f();
 
     if image.width() != width * STONE_SIZE
         || image.height() != height * STONE_SIZE
@@ -127,5 +146,9 @@ fn load_file(entry: DirEntry, width: u32, height: u32) -> Option<(Rgb32FImage, V
         return None;
     }
 
-    Some((image, labels))
+    Some((
+        path.file_stem().unwrap().to_string_lossy().to_string(),
+        image,
+        labels,
+    ))
 }

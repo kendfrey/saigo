@@ -12,7 +12,7 @@ use std::{
 };
 use tch::{
     nn::{self, Module, OptimizerConfig},
-    Device,
+    Device, Kind, Tensor,
 };
 
 mod dataloader;
@@ -61,7 +61,7 @@ fn main() {
     .unwrap();
 
     let device = Device::Cuda(0);
-    let vs = nn::VarStore::new(device);
+    let mut vs = nn::VarStore::new(device);
     let model = VisionModel::new(vs.root());
     let mut opt = nn::Sgd::default().build(&vs, 0.0001).unwrap();
     opt.set_momentum(0.9);
@@ -95,6 +95,8 @@ fn main() {
         println!();
     }
 
+    vs.freeze();
+
     if let Some(mut out) = args.out {
         out.set_extension("safetensors");
         vs.save(&out).unwrap();
@@ -105,6 +107,41 @@ fn main() {
         metadata += &status;
         fs::write(out.with_extension("txt"), metadata).unwrap();
         println!("Model saved to {}", out.display());
+    }
+
+    if args.inspect {
+        println!("Inspecting training data...");
+        let mut top10: Vec<(f64, i64, Tensor, String)> = Vec::new();
+        for dataset in &datasets {
+            for i in 0..dataset.len() {
+                let (sample, label) = &dataset[i];
+                let output = model.forward(&sample.to(device)).softmax(1, Kind::Float);
+                let expected = label.int64_value(&[]);
+                let label_acc = output.double_value(&[0, expected]);
+                let index = top10
+                    .binary_search_by(|(a, _, _, _)| {
+                        a.partial_cmp(&label_acc)
+                            .unwrap_or(std::cmp::Ordering::Greater)
+                    })
+                    .map_or_else(|i| i, |i| i);
+                top10.insert(
+                    index,
+                    (
+                        label_acc,
+                        expected,
+                        output,
+                        format!("Dataset: {} {}", dataset.path.display(), dataset.locate(i)),
+                    ),
+                );
+                top10.truncate(10);
+            }
+        }
+
+        for (_, expected, output, location) in top10 {
+            println!("{}", location);
+            println!("  Expected: {}", expected);
+            println!("  Output: {}", output.to_string(80).unwrap());
+        }
     }
 }
 
@@ -134,4 +171,8 @@ struct Args {
     /// Print training data statistics before training.
     #[arg(short, long)]
     stats: bool,
+
+    /// Display the hardest training samples, in order to search for mislabeled data.
+    #[arg(short, long)]
+    inspect: bool,
 }
