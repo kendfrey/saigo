@@ -5,7 +5,7 @@ use crate::STONE_SIZE;
 /// ### Network architecture:
 ///
 /// - Six input planes, three for R, G, B of the input image and three for R, G, B of the reference image.
-/// - Two convolutional layers producing a single output plane.
+/// - Two convolutional layers producing an output with two planes.
 /// - Two fully connected layers producing four classification output values for
 ///   no stone, black stone, white stone, and obscured.
 #[derive(Debug)]
@@ -15,6 +15,7 @@ pub struct VisionModel {
 }
 
 const HIDDEN_PLANES: i64 = 8;
+const INTERMEDIATE_PLANES: i64 = 2;
 const HIDDEN_NODES: i64 = 64;
 
 impl VisionModel {
@@ -23,12 +24,18 @@ impl VisionModel {
             conv: nn::seq()
                 .add(nn::conv2d(&p, 6, HIDDEN_PLANES, 3, Default::default()))
                 .add_fn(|xs| xs.relu())
-                .add(nn::conv2d(&p, HIDDEN_PLANES, 1, 3, Default::default()))
+                .add(nn::conv2d(
+                    &p,
+                    HIDDEN_PLANES,
+                    INTERMEDIATE_PLANES,
+                    3,
+                    Default::default(),
+                ))
                 .add_fn(|xs| xs.relu()),
             fc: nn::seq()
                 .add(nn::linear(
                     &p,
-                    ((STONE_SIZE - 4) * (STONE_SIZE - 4)) as i64,
+                    INTERMEDIATE_PLANES * ((STONE_SIZE - 4) * (STONE_SIZE - 4)) as i64,
                     HIDDEN_NODES,
                     Default::default(),
                 ))
@@ -40,10 +47,10 @@ impl VisionModel {
 
 impl nn::Module for VisionModel {
     fn forward(&self, xs: &Tensor) -> Tensor {
-        let intermediate = self
-            .conv
-            .forward(xs)
-            .view([-1, ((STONE_SIZE - 4) * (STONE_SIZE - 4)) as i64]);
+        let intermediate = self.conv.forward(xs).view([
+            -1,
+            INTERMEDIATE_PLANES * ((STONE_SIZE - 4) * (STONE_SIZE - 4)) as i64,
+        ]);
         self.fc.forward(&intermediate)
     }
 }
