@@ -1,6 +1,5 @@
 use std::{
     fs::{read_to_string, DirEntry},
-    ops::Index,
     path::{Path, PathBuf},
 };
 
@@ -32,7 +31,7 @@ pub struct Dataset {
     width: u32,
     height: u32,
     image_names: Vec<String>,
-    samples: Vec<(Tensor, Tensor)>,
+    pub samples: Vec<(Tensor, Tensor)>,
 }
 
 impl Dataset {
@@ -101,6 +100,21 @@ impl Dataset {
         self.samples.len()
     }
 
+    pub fn get(&self, index: usize) -> (Tensor, Tensor) {
+        let (sample, label) = &self.samples[index % self.len()];
+        let transformation = index / self.len();
+        let color_permutation = transformation % 6;
+        let transformation = transformation / 6;
+        let flip = transformation % 2;
+        let rotation = transformation / 2;
+        let mut sample = PERMUTATIONS.with(|p| sample.index_select(0, &p[color_permutation]));
+        if flip == 1 {
+            sample = sample.transpose(1, 2);
+        }
+        sample = sample.rot90(rotation as i64, [1, 2]);
+        (sample, label.copy())
+    }
+
     pub fn locate(&self, index: usize) -> String {
         let index = index as u32;
         let x = index % self.width;
@@ -114,11 +128,19 @@ impl Dataset {
     }
 }
 
-impl Index<usize> for Dataset {
-    type Output = (Tensor, Tensor);
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.samples[index]
-    }
+thread_local! {
+    static PERMUTATIONS: [Tensor; 6] = [
+        permutation(0, 1, 2),
+        permutation(0, 2, 1),
+        permutation(1, 0, 2),
+        permutation(1, 2, 0),
+        permutation(2, 0, 1),
+        permutation(2, 1, 0),
+    ];
+}
+
+fn permutation(r: i64, g: i64, b: i64) -> Tensor {
+    Tensor::from_slice(&[r, g, b, r + 3, g + 3, b + 3])
 }
 
 fn load_file(

@@ -20,7 +20,7 @@ impl<'a> DataLoader<'a> {
     pub fn new(datasets: &'a Vec<Dataset>, batch_size: usize, device: Device) -> Self {
         let mut indexes = Vec::new();
         for (i, dataset) in datasets.iter().enumerate() {
-            indexes.extend((0..dataset.len()).map(|index| SampleIndex { dataset: i, index }));
+            indexes.extend((0..dataset.len() * 48).map(|index| SampleIndex { dataset: i, index }));
         }
         indexes.shuffle(&mut thread_rng());
         Self {
@@ -45,10 +45,7 @@ impl<'a> Iterator for DataLoader<'a> {
         let batch_indexes = &self.indexes[self.index..end_index];
         let (samples, labels): (Vec<_>, Vec<_>) = batch_indexes
             .iter()
-            .map(|SampleIndex { dataset, index }| {
-                let (sample, label) = &self.datasets[*dataset][*index];
-                (sample, label)
-            })
+            .map(|SampleIndex { dataset, index }| self.datasets[*dataset].get(*index))
             .unzip();
         self.index = end_index;
         Some((

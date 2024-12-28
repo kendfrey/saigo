@@ -5,6 +5,7 @@ use saigo::vision_model::VisionModel;
 use std::{
     fs::{self, read_dir},
     path::{Path, PathBuf},
+    process,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -34,7 +35,7 @@ fn main() {
         for dataset in &datasets {
             for i in 0..dataset.len() {
                 total += 1.0;
-                let label = dataset[i].1.int64_value(&[]);
+                let label = dataset.samples[i].1.int64_value(&[]);
                 match label {
                     0 => none += 1.0,
                     1 => black += 1.0,
@@ -55,10 +56,14 @@ fn main() {
     let exit: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let exit_setter = exit.clone();
     ctrlc::set_handler(move || {
-        println!("\rFinishing epoch...                              ");
+        if exit_setter.load(Ordering::Relaxed) {
+            process::exit(1);
+        }
+        println!("\rFinishing epoch...                                ");
         exit_setter.store(true, Ordering::Relaxed);
     })
     .unwrap();
+    println!("Press Ctrl+C to exit.");
 
     let device = Device::Cuda(0);
     let mut vs = nn::VarStore::new(device);
@@ -114,7 +119,7 @@ fn main() {
         let mut top10: Vec<(f64, i64, Tensor, String)> = Vec::new();
         for dataset in &datasets {
             for i in 0..dataset.len() {
-                let (sample, label) = &dataset[i];
+                let (sample, label) = &dataset.samples[i];
                 let output = model.forward(&sample.to(device)).softmax(1, Kind::Float);
                 let expected = label.int64_value(&[]);
                 let label_acc = output.double_value(&[0, expected]);
@@ -123,7 +128,7 @@ fn main() {
                         a.partial_cmp(&label_acc)
                             .unwrap_or(std::cmp::Ordering::Greater)
                     })
-                    .map_or_else(|i| i, |i| i);
+                    .unwrap_or_else(|i| i);
                 top10.insert(
                     index,
                     (
