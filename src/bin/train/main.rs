@@ -22,9 +22,12 @@ mod dataset;
 fn main() {
     let args = Args::parse();
 
+    // Load datasets into memory
     println!("Loading datasets...");
     let mut datasets = Vec::new();
     load_datasets_recursively(&args.data, &mut datasets);
+
+    // Show some statistics about the distribution of training data
     if args.stats {
         println!("Calculating statistics...");
         let mut none = 0.0;
@@ -53,6 +56,7 @@ fn main() {
     }
     println!("Finished loading {} datasets", datasets.len());
 
+    // Handle Ctrl+C to stop training
     let exit: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let exit_setter = exit.clone();
     ctrlc::set_handler(move || {
@@ -65,6 +69,7 @@ fn main() {
     .unwrap();
     println!("Press Ctrl+C to exit.");
 
+    // Run the training loop
     let device = Device::Cuda(0);
     let mut vs = nn::VarStore::new(device);
     let model = VisionModel::new(vs.root());
@@ -102,6 +107,7 @@ fn main() {
 
     vs.freeze();
 
+    // Save the model to a file
     if let Some(mut out) = args.out {
         out.set_extension("safetensors");
         vs.save(&out).unwrap();
@@ -114,6 +120,7 @@ fn main() {
         println!("Model saved to {}", out.display());
     }
 
+    // Show the samples that were hardest to learn
     if args.inspect {
         println!("Inspecting training data...");
         let mut top10: Vec<(f64, i64, Tensor, String)> = Vec::new();
@@ -150,6 +157,7 @@ fn main() {
     }
 }
 
+/// Loads all datasets in the specified directory and its subdirectories.
 fn load_datasets_recursively(dir: &Path, datasets: &mut Vec<Dataset>) {
     if let Some(dataset) = Dataset::load(dir) {
         datasets.push(dataset);

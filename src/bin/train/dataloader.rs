@@ -8,6 +8,7 @@ struct SampleIndex {
     index: usize,
 }
 
+/// Shuffles and batches training data from multiple datasets.
 pub struct DataLoader<'a> {
     device: Device,
     datasets: &'a Vec<Dataset>,
@@ -17,9 +18,12 @@ pub struct DataLoader<'a> {
 }
 
 impl<'a> DataLoader<'a> {
+    /// Creates a new data loader.
     pub fn new(datasets: &'a Vec<Dataset>, batch_size: usize, device: Device) -> Self {
         let mut indexes = Vec::new();
         for (i, dataset) in datasets.iter().enumerate() {
+            // Data augmentation is done 48-fold
+            // (6-fold color permutation and 8-fold geometric transformation)
             indexes.extend((0..dataset.len() * 48).map(|index| SampleIndex { dataset: i, index }));
         }
         indexes.shuffle(&mut thread_rng());

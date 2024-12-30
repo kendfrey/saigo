@@ -7,6 +7,7 @@ use image::Rgb32FImage;
 use saigo::STONE_SIZE;
 use tch::{Device, Kind, Tensor};
 
+/// The classes of the training data.
 #[derive(Clone, Copy)]
 pub enum Label {
     None,
@@ -26,6 +27,7 @@ impl From<char> for Label {
     }
 }
 
+/// A single set of training data captured from the same board and loaded from a single directory.
 pub struct Dataset {
     pub path: PathBuf,
     width: u32,
@@ -35,6 +37,7 @@ pub struct Dataset {
 }
 
 impl Dataset {
+    /// Loads a dataset from a directory, if the directory contains a training dataset.
     pub fn load(dir: &Path) -> Option<Self> {
         let reference = image::open(dir.join("reference.png")).ok()?.into_rgb32f();
         println!("  {}", dir.display());
@@ -47,6 +50,7 @@ impl Dataset {
             if let Some((name, img, labels)) = load_file(entry, width, height) {
                 for iy in 0..height {
                     for ix in 0..width {
+                        // For each sample, construct a tensor
                         let mut sample = [0.0; (6 * STONE_SIZE * STONE_SIZE) as usize];
                         let x0 = ix * STONE_SIZE;
                         let y0 = iy * STONE_SIZE;
@@ -96,10 +100,13 @@ impl Dataset {
         })
     }
 
+    /// Returns the number of samples in the dataset (before data augmentation).
     pub fn len(&self) -> usize {
         self.samples.len()
     }
 
+    /// Returns a sample from the dataset.
+    /// Data augmentation is applied by using indexes greater than the number of samples.
     pub fn get(&self, index: usize) -> (Tensor, Tensor) {
         let (sample, label) = &self.samples[index % self.len()];
         let transformation = index / self.len();
@@ -115,6 +122,7 @@ impl Dataset {
         (sample, label.copy())
     }
 
+    /// Returns a textual description of the location of the sample in the dataset.
     pub fn locate(&self, index: usize) -> String {
         let index = index as u32;
         let x = index % self.width;
@@ -139,28 +147,35 @@ thread_local! {
     ];
 }
 
+/// Creates an indexing tensor used to permute the color channels of a sample.
 fn permutation(r: i64, g: i64, b: i64) -> Tensor {
     Tensor::from_slice(&[r, g, b, r + 3, g + 3, b + 3])
 }
 
+/// Loads a training image from a label file, returning the name of the image, the image data, and the labels.
 fn load_file(
     entry: DirEntry,
     width: u32,
     height: u32,
 ) -> Option<(String, Rgb32FImage, Vec<Label>)> {
     let path = entry.path();
+
+    // If the file is not a label file, ignore it
     if path.extension()? != "txt" {
         return None;
     }
 
+    // Load the labels
     let labels: Vec<Label> = read_to_string(&path)
         .ok()?
         .chars()
         .map(Label::from)
         .collect();
 
+    // Load the image
     let image = image::open(path.with_extension("png")).ok()?.into_rgb32f();
 
+    // If the image is invalid, ignore it
     if image.width() != width * STONE_SIZE
         || image.height() != height * STONE_SIZE
         || labels.len() != (width * height) as usize
