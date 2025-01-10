@@ -4,28 +4,11 @@ use std::{
 };
 
 use image::Rgb32FImage;
-use saigo::STONE_SIZE;
+use saigo::{
+    vision_model::{read_tensor, LBL_BLACK, LBL_NONE, LBL_OBSCURED, LBL_WHITE},
+    STONE_SIZE,
+};
 use tch::{Device, Kind, Tensor};
-
-/// The classes of the training data.
-#[derive(Clone, Copy)]
-pub enum Label {
-    None,
-    Black,
-    White,
-    Obscured,
-}
-
-impl From<char> for Label {
-    fn from(s: char) -> Self {
-        match s {
-            'B' => Label::Black,
-            'W' => Label::White,
-            'X' => Label::Obscured,
-            _ => Label::None,
-        }
-    }
-}
 
 /// A single set of training data captured from the same board and loaded from a single directory.
 pub struct Dataset {
@@ -48,40 +31,11 @@ impl Dataset {
 
         for entry in dir.read_dir().ok()?.flatten() {
             if let Some((name, img, labels)) = load_file(entry, width, height) {
-                for iy in 0..height {
-                    for ix in 0..width {
-                        // For each sample, construct a tensor
-                        let mut sample = [0.0; (6 * STONE_SIZE * STONE_SIZE) as usize];
-                        let x0 = ix * STONE_SIZE;
-                        let y0 = iy * STONE_SIZE;
-                        for y in 0..STONE_SIZE {
-                            for x in 0..STONE_SIZE {
-                                let pixel = img.get_pixel(x0 + x, y0 + y);
-                                let ref_pixel = reference.get_pixel(x0 + x, y0 + y);
-                                sample[(y * STONE_SIZE + x) as usize] = pixel[0];
-                                sample[(STONE_SIZE * STONE_SIZE + y * STONE_SIZE + x) as usize] =
-                                    pixel[1];
-                                sample
-                                    [(2 * STONE_SIZE * STONE_SIZE + y * STONE_SIZE + x) as usize] =
-                                    pixel[2];
-                                sample
-                                    [(3 * STONE_SIZE * STONE_SIZE + y * STONE_SIZE + x) as usize] =
-                                    ref_pixel[0];
-                                sample
-                                    [(4 * STONE_SIZE * STONE_SIZE + y * STONE_SIZE + x) as usize] =
-                                    ref_pixel[1];
-                                sample
-                                    [(5 * STONE_SIZE * STONE_SIZE + y * STONE_SIZE + x) as usize] =
-                                    ref_pixel[2];
-                            }
-                        }
-                        let sample = Tensor::from_slice(&sample).view([
-                            6,
-                            STONE_SIZE as i64,
-                            STONE_SIZE as i64,
-                        ]);
+                for y in 0..height {
+                    for x in 0..width {
+                        let sample = read_tensor(&img, &reference, x * STONE_SIZE, y * STONE_SIZE);
                         let label = Tensor::scalar_tensor(
-                            labels[(iy * width + ix) as usize] as i64,
+                            labels[(y * width + x) as usize] as i64,
                             (Kind::Uint8, Device::Cpu),
                         );
                         samples.push((sample, label));
@@ -153,11 +107,7 @@ fn permutation(r: i64, g: i64, b: i64) -> Tensor {
 }
 
 /// Loads a training image from a label file, returning the name of the image, the image data, and the labels.
-fn load_file(
-    entry: DirEntry,
-    width: u32,
-    height: u32,
-) -> Option<(String, Rgb32FImage, Vec<Label>)> {
+fn load_file(entry: DirEntry, width: u32, height: u32) -> Option<(String, Rgb32FImage, Vec<u8>)> {
     let path = entry.path();
 
     // If the file is not a label file, ignore it
@@ -166,10 +116,10 @@ fn load_file(
     }
 
     // Load the labels
-    let labels: Vec<Label> = read_to_string(&path)
+    let labels: Vec<_> = read_to_string(&path)
         .ok()?
         .chars()
-        .map(Label::from)
+        .map(label_from_char)
         .collect();
 
     // Load the image
@@ -188,4 +138,14 @@ fn load_file(
         image,
         labels,
     ))
+}
+
+/// Converts a character (as in a label file) to a label index.
+fn label_from_char(s: char) -> u8 {
+    match s {
+        ' ' => LBL_NONE,
+        'B' => LBL_BLACK,
+        'W' => LBL_WHITE,
+        _ => LBL_OBSCURED,
+    }
 }

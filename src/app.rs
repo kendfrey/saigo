@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
-use image::{Rgb, RgbImage, Rgba, RgbaImage};
+use image::{buffer::ConvertBuffer, Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage};
 use imageproc::{
     drawing::{draw_filled_circle_mut, draw_polygon_mut},
     geometric_transformations::{warp, warp_into, Interpolation, Projection},
@@ -13,7 +13,14 @@ use nokhwa::{
     Camera,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use saigo::STONE_SIZE;
+use saigo::{
+    vision_model::{read_tensor, VisionModel},
+    STONE_SIZE,
+};
+use tch::{
+    nn::{self, Module},
+    Device, Kind, Tensor,
+};
 use tokio::{
     sync::{watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
     time::{self, MissedTickBehavior},
@@ -26,6 +33,8 @@ use crate::{
 
 pub mod config;
 
+type VisionModelOutput = (f32, f32, f32, f32);
+
 /// The global state of the application.
 pub struct AppState {
     config: Config,
@@ -37,6 +46,7 @@ pub struct AppState {
     camera_dirty: watch::Sender<()>,
     camera_broadcast: watch::Sender<RgbImage>,
     board_camera_broadcast: watch::Sender<RgbImage>,
+    raw_board_broadcast: watch::Sender<Vec<Vec<VisionModelOutput>>>,
 }
 
 impl AppState {
@@ -52,6 +62,13 @@ impl AppState {
             config.board.width.get() * STONE_SIZE,
             config.board.height.get() * STONE_SIZE,
         ));
+        let (raw_board_broadcast, _) = watch::channel(vec![
+            vec![
+                (0.0, 0.0, 0.0, 1.0);
+                config.board.width.get() as usize
+            ];
+            config.board.height.get() as usize
+        ]);
         let state = Self {
             config,
             board_config_lock: Arc::new(RwLock::new(())),
@@ -61,10 +78,12 @@ impl AppState {
             camera_dirty,
             camera_broadcast,
             board_camera_broadcast,
+            raw_board_broadcast,
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
         Self::spawn_camera_loop(state_ref.clone());
+        Self::spawn_board_vision_loop(state_ref.clone());
         state_ref
     }
 
@@ -81,6 +100,11 @@ impl AppState {
     /// Returns a new receiver for the board camera broadcast channel.
     pub fn subscribe_to_board_camera_broadcast(&self) -> watch::Receiver<RgbImage> {
         self.board_camera_broadcast.subscribe()
+    }
+
+    /// Returns a new receiver for the raw board broadcast channel.
+    pub fn subscribe_to_raw_board_broadcast(&self) -> watch::Receiver<Vec<Vec<VisionModelOutput>>> {
+        self.raw_board_broadcast.subscribe()
     }
 
     /// Saves the current configuration to the specified profile.
@@ -323,6 +347,34 @@ impl AppState {
         });
     }
 
+    /// Spawns the board vision in a background task.
+    fn spawn_board_vision_loop(state_ref: Arc<RwLock<AppState>>) {
+        tokio::spawn(async move {
+            let device = Device::cuda_if_available();
+            let mut vs = nn::VarStore::new(device);
+            vs.load("model.safetensors").unwrap();
+            let model = VisionModel::new(vs.root());
+
+            let raw_board_broadcast;
+            let mut board_camera_receiver;
+            {
+                let state = state_ref.read().await;
+                raw_board_broadcast = state.raw_board_broadcast.clone();
+                board_camera_receiver = state.board_camera_broadcast.subscribe();
+            }
+
+            while let Ok(()) = board_camera_receiver.changed().await {
+                let reference = match &state_ref.read().await.config.camera.reference_image {
+                    Some(img) => img.convert(),
+                    None => continue,
+                };
+                let img = board_camera_receiver.borrow_and_update().convert();
+                let result = run_vision_model(&model, img, reference, device);
+                raw_board_broadcast.send_replace(result);
+            }
+        });
+    }
+
     /// Renders the display.
     fn render(&self, display_state: DisplayState) -> RgbaImage {
         let raw = self.render_raw(display_state);
@@ -555,4 +607,44 @@ fn start_camera(config: &CameraConfig) -> Option<Camera> {
 /// Tries to read a frame from the current camera.
 fn read_frame(camera: Option<&mut Camera>) -> Option<RgbImage> {
     camera?.frame().ok()?.decode_image::<RgbFormat>().ok()
+}
+
+/// Runs the vision model on an image of the board and returns the state of each intersection.
+fn run_vision_model(
+    model: &VisionModel,
+    image: Rgb32FImage,
+    reference: Rgb32FImage,
+    device: Device,
+) -> Vec<Vec<VisionModelOutput>> {
+    let width = reference.width() / STONE_SIZE;
+    let height = reference.height() / STONE_SIZE;
+    let mut input = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            input.push(read_tensor(
+                &image,
+                &reference,
+                x * STONE_SIZE,
+                y * STONE_SIZE,
+            ));
+        }
+    }
+    let output = model
+        .forward(&Tensor::stack(&input, 0).to(device))
+        .softmax(1, Kind::Float);
+
+    let mut result = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        result.push(Vec::with_capacity(width as usize));
+        for x in 0..width {
+            let index = (y * width + x) as i64;
+            result[y as usize].push((
+                output.double_value(&[index, 0]) as f32,
+                output.double_value(&[index, 1]) as f32,
+                output.double_value(&[index, 2]) as f32,
+                output.double_value(&[index, 3]) as f32,
+            ));
+        }
+    }
+    result
 }

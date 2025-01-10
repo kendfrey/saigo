@@ -39,6 +39,7 @@ async fn main() {
         .route("/ws/control", get(get_websocket_control))
         .route("/ws/camera", websocket(websocket_camera))
         .route("/ws/board-camera", websocket(websocket_board_camera))
+        .route("/ws/raw-board", websocket(websocket_raw_board))
         .route("/api/config/profiles", get(get_config_profiles))
         .route("/api/config/save", post(post_config_save))
         .route("/api/config/load", post(post_config_load))
@@ -154,6 +155,23 @@ async fn websocket_board_camera(state: Arc<RwLock<AppState>>, socket: WebSocket)
 
         stream = WatchStream::from_changes(state.subscribe_to_board_camera_broadcast())
             .map(|image| serialize_image(image.convert()));
+    }
+
+    stream_to_socket(stream, socket).await;
+}
+
+/// Watches for raw board frames and sends them to the client.
+async fn websocket_raw_board(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let _board_config_lock;
+    let stream;
+    {
+        let state = state.read().await;
+
+        // Lock the board configuration
+        _board_config_lock = state.lock_board_config().await;
+
+        stream = WatchStream::from_changes(state.subscribe_to_raw_board_broadcast())
+            .map(|board| Message::Text(serde_json::to_string(&board).unwrap()));
     }
 
     stream_to_socket(stream, socket).await;
