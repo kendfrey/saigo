@@ -352,8 +352,8 @@ impl AppState {
         tokio::spawn(async move {
             let device = Device::cuda_if_available();
             let mut vs = nn::VarStore::new(device);
-            vs.load("model.safetensors").unwrap();
             let model = VisionModel::new(vs.root());
+            vs.load("model.safetensors").unwrap();
 
             let raw_board_broadcast;
             let mut board_camera_receiver;

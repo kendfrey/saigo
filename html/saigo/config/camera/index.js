@@ -133,12 +133,9 @@ async function onInput()
 async function onMessage(event)
 {
 	const buffer = await event.data.arrayBuffer();
-	const view = new DataView(buffer);
-	const width = view.getUint32(0); // The first 4 bytes are the width
-	const height = view.getUint32(4); // The next 4 bytes are the height
-	imageData = new ImageData(new Uint8ClampedArray(buffer, 8), width, height); // The rest is the image data
-	canvas.width = width;
-	canvas.height = height;
+	imageData = toImageData(buffer);
+	canvas.width = imageData.width;
+	canvas.height = imageData.height;
 	render();
 }
 
@@ -182,7 +179,6 @@ async function getReferenceImage(take = false)
 	const h = reference.height = image.height;
 	referenceCtx.drawImage(image, 0, 0, w, h);
 
-	const STONE_SIZE = 16;
 	for (let y = 0; y < h / STONE_SIZE; y++)
 	{
 		for (let x = 0; x < w / STONE_SIZE; x++)
