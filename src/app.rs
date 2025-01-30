@@ -23,6 +23,7 @@ use tch::{
 };
 use tokio::{
     sync::{watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
+    task,
     time::{self, MissedTickBehavior},
 };
 
@@ -369,7 +370,8 @@ impl AppState {
                     None => continue,
                 };
                 let img = board_camera_receiver.borrow_and_update().convert();
-                let result = run_vision_model(&model, img, reference, device);
+                let result =
+                    task::block_in_place(|| run_vision_model(&model, img, reference, device));
                 raw_board_broadcast.send_replace(result);
             }
         });
