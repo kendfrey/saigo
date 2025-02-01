@@ -73,7 +73,7 @@ fn main() {
     let device = Device::Cuda(0);
     let mut vs = nn::VarStore::new(device);
     let model = VisionModel::new(vs.root());
-    let mut opt = nn::Sgd::default().build(&vs, 0.0001).unwrap();
+    let mut opt = nn::Sgd::default().build(&vs, 0.001).unwrap();
     opt.set_momentum(0.9);
     opt.set_weight_decay(0.0001);
 

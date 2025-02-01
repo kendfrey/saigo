@@ -631,20 +631,22 @@ fn run_vision_model(
             ));
         }
     }
-    let output = model
+    let output: Vec<Vec<f32>> = model
         .forward(&Tensor::stack(&input, 0).to(device))
-        .softmax(1, Kind::Float);
+        .softmax(1, Kind::Float)
+        .try_into()
+        .unwrap();
 
-    let mut result = Vec::with_capacity((width * height) as usize);
+    let mut result = Vec::with_capacity(height as usize);
     for y in 0..height {
         result.push(Vec::with_capacity(width as usize));
         for x in 0..width {
-            let index = (y * width + x) as i64;
+            let index = (y * width + x) as usize;
             result[y as usize].push((
-                output.double_value(&[index, 0]) as f32,
-                output.double_value(&[index, 1]) as f32,
-                output.double_value(&[index, 2]) as f32,
-                output.double_value(&[index, 3]) as f32,
+                output[index][0],
+                output[index][1],
+                output[index][2],
+                output[index][3],
             ));
         }
     }
