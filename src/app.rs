@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
+use goban::pieces::{goban::Goban, stones::Color};
 use image::{buffer::ConvertBuffer, Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage};
 use imageproc::{
     drawing::{draw_filled_circle_mut, draw_polygon_mut},
@@ -48,6 +49,7 @@ pub struct AppState {
     camera_broadcast: watch::Sender<RgbImage>,
     board_camera_broadcast: watch::Sender<RgbImage>,
     raw_board_broadcast: watch::Sender<Vec<Vec<VisionModelOutput>>>,
+    board_broadcast: watch::Sender<Goban>,
 }
 
 impl AppState {
@@ -70,6 +72,10 @@ impl AppState {
             ];
             config.board.height.get() as usize
         ]);
+        let (board_broadcast, _) = watch::channel(Goban::new((
+            config.board.height.get() as u8,
+            config.board.width.get() as u8,
+        )));
         let state = Self {
             config,
             board_config_lock: Arc::new(RwLock::new(())),
@@ -80,6 +86,7 @@ impl AppState {
             camera_broadcast,
             board_camera_broadcast,
             raw_board_broadcast,
+            board_broadcast,
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
@@ -106,6 +113,11 @@ impl AppState {
     /// Returns a new receiver for the raw board broadcast channel.
     pub fn subscribe_to_raw_board_broadcast(&self) -> watch::Receiver<Vec<Vec<VisionModelOutput>>> {
         self.raw_board_broadcast.subscribe()
+    }
+
+    /// Returns a new receiver for the board broadcast channel.
+    pub fn subscribe_to_board_broadcast(&self) -> watch::Receiver<Goban> {
+        self.board_broadcast.subscribe()
     }
 
     /// Saves the current configuration to the specified profile.
@@ -357,12 +369,16 @@ impl AppState {
             vs.load("model.safetensors").unwrap();
 
             let raw_board_broadcast;
+            let board_broadcast;
             let mut board_camera_receiver;
             {
                 let state = state_ref.read().await;
                 raw_board_broadcast = state.raw_board_broadcast.clone();
+                board_broadcast = state.board_broadcast.clone();
                 board_camera_receiver = state.board_camera_broadcast.subscribe();
             }
+
+            let mut current_board = board_broadcast.borrow().clone();
 
             while let Ok(()) = board_camera_receiver.changed().await {
                 let reference = match &state_ref.read().await.config.camera.reference_image {
@@ -372,7 +388,14 @@ impl AppState {
                 let img = board_camera_receiver.borrow_and_update().convert();
                 let result =
                     task::block_in_place(|| run_vision_model(&model, img, reference, device));
+                let board = get_board(&result);
                 raw_board_broadcast.send_replace(result);
+                if let Some(board) = board {
+                    if board != current_board {
+                        current_board = board.clone();
+                        board_broadcast.send_replace(board);
+                    }
+                }
             }
         });
     }
@@ -651,4 +674,24 @@ fn run_vision_model(
         }
     }
     result
+}
+
+/// Calculates the most likely state of the board, or returns None if part of the board is obscured.
+fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Option<Goban> {
+    let mut goban = Goban::new((probabilities.len() as u8, probabilities[0].len() as u8));
+    for (y, row) in probabilities.iter().enumerate() {
+        for (x, (empty, black, white, _)) in row.iter().enumerate() {
+            let color = if *empty > 0.9 {
+                continue;
+            } else if *black > 0.9 {
+                Color::Black
+            } else if *white > 0.9 {
+                Color::White
+            } else {
+                return None;
+            };
+            goban.push((y as u8, x as u8), color);
+        }
+    }
+    Some(goban)
 }

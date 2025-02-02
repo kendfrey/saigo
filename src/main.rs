@@ -15,6 +15,7 @@ use axum::{
     Json, Router,
 };
 use error::SaigoError;
+use goban::pieces::{goban::Goban, stones::Color};
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -40,6 +41,7 @@ async fn main() {
         .route("/ws/camera", websocket(websocket_camera))
         .route("/ws/board-camera", websocket(websocket_board_camera))
         .route("/ws/raw-board", websocket(websocket_raw_board))
+        .route("/ws/board", websocket(websocket_board))
         .route("/api/config/profiles", get(get_config_profiles))
         .route("/api/config/save", post(post_config_save))
         .route("/api/config/load", post(post_config_load))
@@ -177,6 +179,23 @@ async fn websocket_raw_board(state: Arc<RwLock<AppState>>, socket: WebSocket) {
     stream_to_socket(stream, socket).await;
 }
 
+/// Watches for board updates and sends them to the client.
+async fn websocket_board(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let _board_config_lock;
+    let stream;
+    {
+        let state = state.read().await;
+
+        // Lock the board configuration
+        _board_config_lock = state.lock_board_config().await;
+
+        stream =
+            WatchStream::from_changes(state.subscribe_to_board_broadcast()).map(serialize_goban);
+    }
+
+    stream_to_socket(stream, socket).await;
+}
+
 /// Sends updates to the client.
 async fn stream_to_socket(
     mut stream: impl Stream<Item = Message> + Unpin + Send,
@@ -200,6 +219,29 @@ fn serialize_image(image: RgbaImage) -> Message {
     data.extend(image.height().to_be_bytes()); // The next 4 bytes are the height
     data.extend(image.into_raw()); // The rest is the image data
     Message::Binary(data)
+}
+
+/// Serializes a Goban into a text message.
+fn serialize_goban(goban: Goban) -> Message {
+    let height = goban.size().0 as usize;
+    let width = goban.size().1 as usize;
+    let mut data = Vec::with_capacity(height);
+    for y in 0..height {
+        data.push(Vec::with_capacity(width));
+        for x in 0..width {
+            data[y].push(serialize_color(&goban.get_color((y as u8, x as u8))));
+        }
+    }
+    Message::Text(serde_json::to_string(&data).unwrap())
+}
+
+/// Serializes a stone color into a string.
+fn serialize_color(color: &Option<Color>) -> String {
+    match color {
+        None => " ".to_string(),
+        Some(Color::Black) => "B".to_string(),
+        Some(Color::White) => "W".to_string(),
+    }
 }
 
 /// Gets the list of available configuration profiles.

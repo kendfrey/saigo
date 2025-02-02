@@ -1,13 +1,19 @@
 "use strict";
 
-const canvas = document.querySelector("canvas");
-const ctx = canvas.getContext("2d");
+const cameraCanvas = document.getElementById("camera");
+const cameraCtx = cameraCanvas.getContext("2d");
+
+const boardCanvas = document.getElementById("board");
+const boardCtx = boardCanvas.getContext("2d");
 
 const imageWs = new WebSocket(`ws://${location.host}/ws/board-camera`);
 imageWs.addEventListener("message", onImageMessage);
 
-const ws = new WebSocket(`ws://${location.host}/ws/raw-board`);
-ws.addEventListener("message", onMessage);
+const rawBoardWs = new WebSocket(`ws://${location.host}/ws/raw-board`);
+rawBoardWs.addEventListener("message", onRawBoardMessage);
+
+const boardWs = new WebSocket(`ws://${location.host}/ws/board`);
+boardWs.addEventListener("message", onBoardMessage);
 
 let imageData = null;
 let data = null;
@@ -16,23 +22,28 @@ async function onImageMessage(event)
 {
 	const buffer = await event.data.arrayBuffer();
 	imageData = toImageData(buffer);
-	render();
+	renderCamera();
 }
 
-async function onMessage(event)
+async function onRawBoardMessage(event)
 {
 	data = JSON.parse(event.data);
-	render();
+	renderCamera();
 }
 
-function render()
+async function onBoardMessage(event)
+{
+	renderBoard(JSON.parse(event.data));
+}
+
+function renderCamera()
 {
 	if (imageData === null || data === null)
 		return;
 
-	canvas.width = imageData.width;
-	canvas.height = imageData.height;
-	ctx.putImageData(imageData, 0, 0);
+	cameraCanvas.width = imageData.width;
+	cameraCanvas.height = imageData.height;
+	cameraCtx.putImageData(imageData, 0, 0);
 
 	for (let y = 0; y < data.length; y++)
 	{
@@ -47,24 +58,75 @@ function render()
 			let cx = (x + 0.5) * STONE_SIZE;
 			let cy = (y + 0.5) * STONE_SIZE;
 			let r = STONE_SIZE * 0.4;
-			ctx.fillStyle = "white";
-			ctx.beginPath();
-			ctx.moveTo(cx, cy);
-			ctx.arc(cx, cy, r, angle4, angle2);
-			ctx.closePath();
-			ctx.fill();
-			ctx.fillStyle = "red";
-			ctx.beginPath();
-			ctx.moveTo(cx, cy);
-			ctx.arc(cx, cy, r, angle2, angle1);
-			ctx.closePath();
-			ctx.fill();
-			ctx.fillStyle = "black";
-			ctx.beginPath();
-			ctx.moveTo(cx, cy);
-			ctx.arc(cx, cy, r, angle1, angle3);
-			ctx.closePath();
-			ctx.fill();
+			cameraCtx.fillStyle = "white";
+			cameraCtx.beginPath();
+			cameraCtx.moveTo(cx, cy);
+			cameraCtx.arc(cx, cy, r, angle4, angle2);
+			cameraCtx.closePath();
+			cameraCtx.fill();
+			cameraCtx.fillStyle = "red";
+			cameraCtx.beginPath();
+			cameraCtx.moveTo(cx, cy);
+			cameraCtx.arc(cx, cy, r, angle2, angle1);
+			cameraCtx.closePath();
+			cameraCtx.fill();
+			cameraCtx.fillStyle = "black";
+			cameraCtx.beginPath();
+			cameraCtx.moveTo(cx, cy);
+			cameraCtx.arc(cx, cy, r, angle1, angle3);
+			cameraCtx.closePath();
+			cameraCtx.fill();
+		}
+	}
+}
+
+function renderBoard(board)
+{
+	const scale = 15;
+	const offset = scale * 0.5;
+	const w = board[0].length;
+	const h = board.length;
+	boardCanvas.width = w * scale;
+	boardCanvas.height = h * scale;
+
+	boardCtx.fillStyle = "#e6ba73";
+	boardCtx.fillRect(0, 0, w * scale, h * scale);
+	
+	boardCtx.strokeStyle = "black";
+	for (let y = 0; y < h; y++)
+	{
+		boardCtx.beginPath();
+		boardCtx.moveTo(offset, y * scale + offset);
+		boardCtx.lineTo((w - 1) * scale + offset, y * scale + offset);
+		boardCtx.stroke();
+	}
+	for (let x = 0; x < w; x++)
+	{
+		boardCtx.beginPath();
+		boardCtx.moveTo(x * scale + offset, offset);
+		boardCtx.lineTo(x * scale + offset, (h - 1) * scale + offset);
+		boardCtx.stroke();
+	}
+
+	for (let y = 0; y < board.length; y++)
+	{
+		const row = board[y];
+		for (let x = 0; x < row.length; x++)
+		{
+			switch (row[x])
+			{
+				case "B":
+					boardCtx.fillStyle = "black";
+					break;
+				case "W":
+					boardCtx.fillStyle = "white";
+					break;
+				default:
+					continue;
+			}
+			boardCtx.beginPath();
+			boardCtx.ellipse(x * scale + offset, y * scale + offset, scale * 0.5, scale * 0.5, 0, 0, 2 * Math.PI);
+			boardCtx.fill();
 		}
 	}
 }
