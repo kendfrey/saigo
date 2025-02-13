@@ -1,0 +1,4 @@
+training-data\19
+training-data\19green
+training-data\9
+Epoch: 250 Loss: 0.0065371764 Acc: 0.9979686292

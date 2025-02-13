@@ -73,7 +73,12 @@ fn main() {
     let device = Device::Cuda(0);
     let mut vs = nn::VarStore::new(device);
     let model = VisionModel::new(vs.root());
-    let mut opt = nn::Sgd::default().build(&vs, 0.001).unwrap();
+
+    let mut best_loss = f64::INFINITY;
+    let mut best_epoch = 0;
+    let mut lr = 0.01;
+
+    let mut opt = nn::Sgd::default().build(&vs, lr).unwrap();
     opt.set_momentum(0.9);
     opt.set_weight_decay(0.0001);
 
@@ -84,6 +89,7 @@ fn main() {
         let mut total_count = 0.0;
         let mut total_loss = 0.0;
         let mut total_acc = 0.0;
+        let mut avg_loss = 0.0;
         for batch in DataLoader::new(&datasets, 1024, device) {
             let (samples, labels) = batch;
             let outputs = model.forward(&samples);
@@ -94,15 +100,25 @@ fn main() {
             total_count += n;
             total_loss += loss.double_value(&[]) * n;
             total_acc += outputs.accuracy_for_logits(&labels).double_value(&[]) * n;
+            avg_loss = total_loss / total_count;
             status = format!(
                 "Epoch: {} Loss: {:<.10} Acc: {:<.10}",
                 epoch,
-                total_loss / total_count,
+                avg_loss,
                 total_acc / total_count
             );
             print!("\r{}", status);
         }
         println!();
+
+        if avg_loss < best_loss {
+            best_loss = avg_loss;
+            best_epoch = epoch;
+        } else if epoch > best_epoch + 2 {
+            lr *= 0.5;
+            opt.set_lr(lr);
+            println!("LR: {}", lr);
+        }
     }
 
     vs.freeze();
