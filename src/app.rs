@@ -1,12 +1,14 @@
 use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
+use game::{GameState, StateUpdate, Status};
 use goban::pieces::{goban::Goban, stones::Color};
 use image::{buffer::ConvertBuffer, Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage};
 use imageproc::{
-    drawing::{draw_filled_circle_mut, draw_polygon_mut},
+    drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_polygon_mut},
     geometric_transformations::{warp, warp_into, Interpolation, Projection},
     point::Point,
+    rect::Rect,
 };
 use nokhwa::{
     pixel_format::RgbFormat,
@@ -16,14 +18,14 @@ use nokhwa::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use saigo::{
     vision_model::{read_tensor, VisionModel},
-    STONE_SIZE,
+    GameMessage, STONE_SIZE,
 };
 use tch::{
     nn::{self, Module},
     Device, Kind, Tensor,
 };
 use tokio::{
-    sync::{watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
+    sync::{broadcast, watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
     task,
     time::{self, MissedTickBehavior},
 };
@@ -34,6 +36,7 @@ use crate::{
 };
 
 pub mod config;
+pub mod game;
 
 type VisionModelOutput = (f32, f32, f32, f32);
 
@@ -50,32 +53,30 @@ pub struct AppState {
     board_camera_broadcast: watch::Sender<RgbImage>,
     raw_board_broadcast: watch::Sender<Vec<Vec<VisionModelOutput>>>,
     board_broadcast: watch::Sender<Goban>,
+    game_broadcast: broadcast::Sender<GameMessage>,
+    pub game: GameState,
 }
 
 impl AppState {
     /// Starts a new instance of the application.
     pub fn start() -> Arc<RwLock<Self>> {
         let config = Config::load(None).expect("Failed to load configuration");
+        let width = config.board.width.get();
+        let height = config.board.height.get();
         let (display_state, _) = watch::channel(DisplayState::default());
         let (display_dirty, _) = watch::channel(());
         let (display_broadcast, _) = watch::channel(RgbaImage::new(160, 120));
         let (camera_dirty, _) = watch::channel(());
         let (camera_broadcast, _) = watch::channel(RgbImage::new(160, 120));
-        let (board_camera_broadcast, _) = watch::channel(RgbImage::new(
-            config.board.width.get() * STONE_SIZE,
-            config.board.height.get() * STONE_SIZE,
-        ));
-        let (raw_board_broadcast, _) = watch::channel(vec![
-            vec![
-                (0.0, 0.0, 0.0, 1.0);
-                config.board.width.get() as usize
-            ];
-            config.board.height.get() as usize
-        ]);
-        let (board_broadcast, _) = watch::channel(Goban::new((
-            config.board.height.get() as u8,
-            config.board.width.get() as u8,
-        )));
+        let (board_camera_broadcast, _) =
+            watch::channel(RgbImage::new(width * STONE_SIZE, height * STONE_SIZE));
+        let (raw_board_broadcast, _) =
+            watch::channel(vec![
+                vec![(0.0, 0.0, 0.0, 1.0); width as usize];
+                height as usize
+            ]);
+        let (board_broadcast, _) = watch::channel(Goban::new((height as u8, width as u8)));
+        let (game_broadcast, _) = broadcast::channel(4);
         let state = Self {
             config,
             board_config_lock: Arc::new(RwLock::new(())),
@@ -87,6 +88,8 @@ impl AppState {
             board_camera_broadcast,
             raw_board_broadcast,
             board_broadcast,
+            game_broadcast,
+            game: GameState::new(width as usize, height as usize, Color::Black),
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
@@ -118,6 +121,11 @@ impl AppState {
     /// Returns a new receiver for the board broadcast channel.
     pub fn subscribe_to_board_broadcast(&self) -> watch::Receiver<Goban> {
         self.board_broadcast.subscribe()
+    }
+
+    /// Returns a new receiver for the game broadcast channel.
+    pub fn subscribe_to_game_broadcast(&self) -> broadcast::Receiver<GameMessage> {
+        self.game_broadcast.subscribe()
     }
 
     /// Saves the current configuration to the specified profile.
@@ -272,6 +280,15 @@ impl AppState {
         board_image
     }
 
+    /// Starts a new game.
+    pub fn new_game(&mut self, user_color: Color) {
+        self.game = GameState::new(
+            self.config.board.width.get() as usize,
+            self.config.board.height.get() as usize,
+            user_color,
+        );
+    }
+
     /// Spawns the renderer in a background task.
     fn spawn_render_loop(state_ref: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
@@ -381,6 +398,7 @@ impl AppState {
             let mut current_board = board_broadcast.borrow().clone();
 
             while let Ok(()) = board_camera_receiver.changed().await {
+                // Run the neural network on the camera image
                 let reference = match &state_ref.read().await.config.camera.reference_image {
                     Some(img) => img.convert(),
                     None => continue,
@@ -389,11 +407,31 @@ impl AppState {
                 let result =
                     task::block_in_place(|| run_vision_model(&model, img, reference, device));
                 let board = get_board(&result);
+                // Broadcast the raw output of the neural network
                 raw_board_broadcast.send_replace(result);
                 if let Some(board) = board {
+                    // If the board has changed, broadcast it
                     if board != current_board {
                         current_board = board.clone();
                         board_broadcast.send_replace(board);
+                        // If the updated board results in a valid change to the state of the game, broadcast it
+                        let mut state = state_ref.write().await;
+                        match state.game.check_for_move(&current_board) {
+                            StateUpdate::UserMove(coord) => {
+                                let _ = state
+                                    .game_broadcast
+                                    .send(GameMessage::Move { location: coord });
+                            }
+                            StateUpdate::UserPass => {
+                                let _ = state.game_broadcast.send(GameMessage::Pass);
+                            }
+                            StateUpdate::UserResign => {
+                                let _ = state.game_broadcast.send(GameMessage::Resign);
+                            }
+                            StateUpdate::OpponentMovePlayed => {}
+                            StateUpdate::None => {}
+                        }
+                        state.display_dirty.send_replace(());
                     }
                 }
             }
@@ -418,6 +456,12 @@ impl AppState {
             }
             DisplayState::Training(seed) => {
                 self.render_training(seed, &mut ctx);
+            }
+            DisplayState::Game => {
+                self.render_game(&mut ctx);
+            }
+            DisplayState::GameOver(won) => {
+                self.render_endgame(won, &mut ctx);
             }
         }
 
@@ -471,6 +515,7 @@ impl AppState {
     fn render_training(&self, seed: <StdRng as SeedableRng>::Seed, ctx: &mut RenderingContext) {
         let mut rng = StdRng::from_seed(seed);
 
+        // Draw random circles on a fraction of the intersections
         for x in 0..self.config.board.width.get() {
             for y in 0..self.config.board.height.get() {
                 if rng.gen_bool(0.1) {
@@ -481,6 +526,7 @@ impl AppState {
             }
         }
 
+        // Draw a random solid triangle
         let x1 = rng.gen_range(0.0..self.config.board.width.get() as f32);
         let y1 = rng.gen_range(0.0..self.config.board.height.get() as f32);
         let x2 = rng.gen_range(0.0..self.config.board.width.get() as f32);
@@ -502,6 +548,50 @@ impl AppState {
                 255,
             ])
         }
+    }
+
+    /// Renders the display for the active game.
+    fn render_game(&self, ctx: &mut RenderingContext) {
+        let width = self.config.board.width.get() as f32;
+        let height = self.config.board.height.get() as f32;
+        let (user_turn, highlighted_move) = match self.game.status() {
+            Status::UserTurn => (true, None),
+            Status::OpponentTurn => (false, None),
+            Status::OpponentPlayed(sgf_coord) => (true, Some(sgf_coord)),
+        };
+
+        // Draw a white bar on the edge of the board nearest to the current player
+        // Draw the bar in yellow if the player must first play the opponent's last move
+        let top = if user_turn { height - 1.5 } else { -0.5 };
+        let color = if highlighted_move.is_some() {
+            Rgba([255, 255, 0, 255])
+        } else {
+            Rgba([255, 255, 255, 255])
+        };
+        ctx.fill_rectangle(-0.5, top, width, 1.0, color);
+
+        // If the opponent's last move hasn't been played yet, highlight its location on the board
+        if let Some(coord) = highlighted_move {
+            let (x, y) = coord.try_into().unwrap();
+            ctx.fill_circle(x as f32, y as f32, 0.5, Rgba([255, 255, 255, 255]));
+        }
+    }
+
+    /// Renders the game over display.
+    fn render_endgame(&self, won: bool, ctx: &mut RenderingContext) {
+        // Highlight the entire board in green for a win and red for a loss
+        let color: Rgba<u8> = if won {
+            Rgba([0, 255, 0, 255])
+        } else {
+            Rgba([255, 0, 0, 255])
+        };
+        ctx.fill_rectangle(
+            -0.5,
+            -0.5,
+            self.config.board.width.get() as f32 - 0.5,
+            self.config.board.height.get() as f32 - 0.5,
+            color,
+        );
     }
 
     /// Returns the projection matrix that maps the display to the screen.
@@ -547,7 +637,7 @@ impl AppState {
         f32::min(
             self.config.display.image_width.get() as f32 / self.config.board.width.get() as f32,
             self.config.display.image_height.get() as f32 / self.config.board.height.get() as f32,
-        )
+        ) * 0.99
     }
 }
 
@@ -557,6 +647,8 @@ pub enum DisplayState {
     #[default]
     Calibrate,
     Training(<StdRng as SeedableRng>::Seed),
+    Game,
+    GameOver(bool),
 }
 
 /// Helper struct for rendering the display.
@@ -576,6 +668,23 @@ impl RenderingContext {
             &mut self.img,
             (ctr_x as i32, ctr_y as i32),
             (self.stone_size * 0.5 * size) as i32,
+            color,
+        );
+    }
+
+    /// Draws a filled rectangle.
+    fn fill_rectangle(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba<u8>) {
+        let left = self.origin_x + x * self.stone_size;
+        let top = self.origin_y + y * self.stone_size;
+        let right = left + width * self.stone_size;
+        let bottom = top + height * self.stone_size;
+        let left = left as i32;
+        let top = top as i32;
+        let right = right as i32;
+        let bottom = bottom as i32;
+        draw_filled_rect_mut(
+            &mut self.img,
+            Rect::at(left, top).of_size((right - left) as u32, (bottom - top) as u32),
             color,
         );
     }
@@ -690,7 +799,7 @@ fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Option<Goban> {
             } else {
                 return None;
             };
-            goban.push((y as u8, x as u8), color);
+            goban.push((x as u8, y as u8), color);
         }
     }
     Some(goban)

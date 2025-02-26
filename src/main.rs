@@ -19,11 +19,14 @@ use goban::pieces::{goban::Goban, stones::Color};
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use saigo::ControlMessage;
+use saigo::{ControlMessage, SerializableColor};
 use serde::Deserialize;
 use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
-use tokio_stream::{wrappers::WatchStream, Stream, StreamExt};
+use tokio_stream::{
+    wrappers::{BroadcastStream, WatchStream},
+    Stream, StreamExt,
+};
 use tower_http::services::ServeDir;
 
 mod app;
@@ -42,6 +45,7 @@ async fn main() {
         .route("/ws/board-camera", websocket(websocket_board_camera))
         .route("/ws/raw-board", websocket(websocket_raw_board))
         .route("/ws/board", websocket(websocket_board))
+        .route("/ws/game", websocket(websocket_game))
         .route("/api/config/profiles", get(get_config_profiles))
         .route("/api/config/save", post(post_config_save))
         .route("/api/config/load", post(post_config_load))
@@ -113,9 +117,38 @@ async fn websocket_control(
                 Message::Text(json) => {
                     match serde_json::from_str(&json) {
                         Ok(control_message) => match control_message {
+                            ControlMessage::Reset => {
+                                // Reset the display to the default state
+                                display_state.send(DisplayState::default());
+                            }
                             ControlMessage::NewTrainingPattern => {
                                 // Reseed the RNG to generate a new training pattern
                                 display_state.send(DisplayState::Training(rng.gen()));
+                            }
+                            ControlMessage::NewGame {
+                                user_color: SerializableColor(user_color),
+                            } => {
+                                // Start a new game
+                                state.write().await.new_game(user_color);
+                                display_state.send(DisplayState::Game);
+                            }
+                            ControlMessage::PlayMove { location } => {
+                                // Play a move
+                                state.write().await.game.play_move(location);
+                                display_state.send(DisplayState::Game);
+                            }
+                            ControlMessage::PlayPass => {
+                                // Pass
+                                state.write().await.game.play_pass();
+                                display_state.send(DisplayState::Game);
+                            }
+                            ControlMessage::EndGame {
+                                winner: SerializableColor(winner),
+                            } => {
+                                // Show the game over display
+                                display_state.send(DisplayState::GameOver(
+                                    winner == state.read().await.game.user_color(),
+                                ));
                             }
                         },
                         Err(_) => continue,
@@ -196,6 +229,23 @@ async fn websocket_board(state: Arc<RwLock<AppState>>, socket: WebSocket) {
     stream_to_socket(stream, socket).await;
 }
 
+/// Watches for game updates and sends them to the client.
+async fn websocket_game(state: Arc<RwLock<AppState>>, socket: WebSocket) {
+    let _board_config_lock;
+    let stream;
+    {
+        let state = state.read().await;
+
+        // Lock the board configuration
+        _board_config_lock = state.lock_board_config().await;
+
+        stream = BroadcastStream::new(state.subscribe_to_game_broadcast())
+            .map(|message| Message::Text(serde_json::to_string(&message.unwrap()).unwrap()));
+    }
+
+    stream_to_socket(stream, socket).await;
+}
+
 /// Sends updates to the client.
 async fn stream_to_socket(
     mut stream: impl Stream<Item = Message> + Unpin + Send,
@@ -229,7 +279,7 @@ fn serialize_goban(goban: Goban) -> Message {
     for y in 0..height {
         data.push(Vec::with_capacity(width));
         for x in 0..width {
-            data[y].push(serialize_color(&goban.get_color((y as u8, x as u8))));
+            data[y].push(serialize_color(&goban.get_color((x as u8, y as u8))));
         }
     }
     Message::Text(serde_json::to_string(&data).unwrap())
