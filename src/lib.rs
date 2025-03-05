@@ -1,9 +1,8 @@
+use std::ops::Not;
+
 use goban::pieces::{stones::Color, util::coord::Coord};
 use image::RgbaImage;
-use serde::{
-    de::{self, Unexpected},
-    Deserialize, Deserializer, Serialize, Serializer,
-};
+use serde::{Deserialize, Serialize};
 
 pub mod vision_model;
 
@@ -17,53 +16,110 @@ pub struct SgfCoord(pub String);
 const SGF_CHAR_MAP: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 impl TryFrom<&SgfCoord> for Coord {
-    type Error = ();
+    type Error = String;
     fn try_from(value: &SgfCoord) -> Result<Self, Self::Error> {
         let x = SGF_CHAR_MAP
-            .find(value.0.chars().nth(0).ok_or(())?)
-            .ok_or(())?;
+            .find(value.0.chars().nth(0).ok_or("Invalid coordinate")?)
+            .ok_or("Invalid coordinate")?;
         let y = SGF_CHAR_MAP
-            .find(value.0.chars().nth(1).ok_or(())?)
-            .ok_or(())?;
+            .find(value.0.chars().nth(1).ok_or("Invalid coordinate")?)
+            .ok_or("Invalid coordinate")?;
         Ok((x as u8, y as u8))
     }
 }
 
 impl TryFrom<Coord> for SgfCoord {
-    type Error = ();
+    type Error = String;
     fn try_from(value: Coord) -> Result<Self, Self::Error> {
-        let x = SGF_CHAR_MAP.chars().nth(value.0 as usize).ok_or(())?;
-        let y = SGF_CHAR_MAP.chars().nth(value.1 as usize).ok_or(())?;
+        let x = SGF_CHAR_MAP
+            .chars()
+            .nth(value.0 as usize)
+            .ok_or("Invalid coordinate")?;
+        let y = SGF_CHAR_MAP
+            .chars()
+            .nth(value.1 as usize)
+            .ok_or("Invalid coordinate")?;
         Ok(SgfCoord(format!("{}{}", x, y)))
     }
 }
 
-/// The player color.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct SerializableColor(pub Color);
+const GTP_CHAR_MAP: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
 
-impl Serialize for SerializableColor {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self.0 {
-            Color::Black => serializer.serialize_str("B"),
-            Color::White => serializer.serialize_str("W"),
+impl SgfCoord {
+    /// Creates an SGF-style coordinate from a GTP-style coordinate.
+    pub fn from_gtp_coord(coord: &str, board_height: u8) -> Result<Self, String> {
+        let x = GTP_CHAR_MAP
+            .find(
+                coord
+                    .chars()
+                    .nth(0)
+                    .ok_or("Invalid coordinate")?
+                    .to_ascii_uppercase(),
+            )
+            .ok_or("Invalid coordinate")? as u8;
+        let y = board_height - coord[1..].parse::<u8>().map_err(|e| format!("{}", e))?;
+        SgfCoord::try_from((x, y))
+    }
+
+    /// Converts the SGF-style coordinate to a GTP-style coordinate.
+    pub fn to_gtp_coord(&self, board_height: u8) -> Result<String, String> {
+        let (x, y) = Coord::try_from(self)?;
+        Ok(format!(
+            "{}{}",
+            GTP_CHAR_MAP
+                .chars()
+                .nth(x as usize)
+                .ok_or("Invalid coordinate")?,
+            board_height - y
+        ))
+    }
+}
+
+/// The player color.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(try_from = "&str")]
+pub enum SerializableColor {
+    #[serde(rename = "B")]
+    Black,
+    #[serde(rename = "W")]
+    White,
+}
+
+impl Not for SerializableColor {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        match self {
+            SerializableColor::Black => SerializableColor::White,
+            SerializableColor::White => SerializableColor::Black,
         }
     }
 }
 
-impl<'de> Deserialize<'de> for SerializableColor {
-    fn deserialize<D>(deserializer: D) -> Result<SerializableColor, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.to_uppercase().chars().nth(0) {
-            Some('B') => Ok(SerializableColor(Color::Black)),
-            Some('W') => Ok(SerializableColor(Color::White)),
-            _ => Err(de::Error::invalid_value(Unexpected::Str(&s), &"B or W")),
+impl From<Color> for SerializableColor {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Black => SerializableColor::Black,
+            Color::White => SerializableColor::White,
+        }
+    }
+}
+
+impl From<SerializableColor> for Color {
+    fn from(color: SerializableColor) -> Self {
+        match color {
+            SerializableColor::Black => Color::Black,
+            SerializableColor::White => Color::White,
+        }
+    }
+}
+
+impl TryFrom<&str> for SerializableColor {
+    type Error = &'static str;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_uppercase().chars().nth(0) {
+            Some('B') => Ok(SerializableColor::Black),
+            Some('W') => Ok(SerializableColor::White),
+            _ => Err("Expected B or W"),
         }
     }
 }

@@ -573,6 +573,7 @@ impl AppState {
         // If the opponent's last move hasn't been played yet, highlight its location on the board
         if let Some(coord) = highlighted_move {
             let (x, y) = coord.try_into().unwrap();
+            ctx.fill_circle(x as f32, y as f32, 0.75, Rgba([0, 0, 0, 255]));
             ctx.fill_circle(x as f32, y as f32, 0.5, Rgba([255, 255, 255, 255]));
         }
     }

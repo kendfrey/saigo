@@ -19,7 +19,7 @@ use goban::pieces::{goban::Goban, stones::Color};
 use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
 use nokhwa::utils::ApiBackend;
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use saigo::{ControlMessage, SerializableColor};
+use saigo::ControlMessage;
 use serde::Deserialize;
 use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
@@ -125,11 +125,9 @@ async fn websocket_control(
                                 // Reseed the RNG to generate a new training pattern
                                 display_state.send(DisplayState::Training(rng.gen()));
                             }
-                            ControlMessage::NewGame {
-                                user_color: SerializableColor(user_color),
-                            } => {
+                            ControlMessage::NewGame { user_color } => {
                                 // Start a new game
-                                state.write().await.new_game(user_color);
+                                state.write().await.new_game(user_color.into());
                                 display_state.send(DisplayState::Game);
                             }
                             ControlMessage::PlayMove { location } => {
@@ -142,12 +140,10 @@ async fn websocket_control(
                                 state.write().await.game.play_pass();
                                 display_state.send(DisplayState::Game);
                             }
-                            ControlMessage::EndGame {
-                                winner: SerializableColor(winner),
-                            } => {
+                            ControlMessage::EndGame { winner } => {
                                 // Show the game over display
                                 display_state.send(DisplayState::GameOver(
-                                    winner == state.read().await.game.user_color(),
+                                    winner == state.read().await.game.user_color().into(),
                                 ));
                             }
                         },
