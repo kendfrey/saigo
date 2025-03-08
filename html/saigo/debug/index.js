@@ -15,13 +15,13 @@ rawBoardWs.addEventListener("message", onRawBoardMessage);
 const boardWs = new WebSocket(`ws://${location.host}/ws/board`);
 boardWs.addEventListener("message", onBoardMessage);
 
-let imageData = null;
+let imageBitmap = null;
 let data = null;
 
 async function onImageMessage(event)
 {
 	const buffer = await event.data.arrayBuffer();
-	imageData = toImageData(buffer);
+	imageBitmap = await createImageBitmap(toImageData(buffer));
 	renderCamera();
 }
 
@@ -38,12 +38,12 @@ async function onBoardMessage(event)
 
 function renderCamera()
 {
-	if (imageData === null || data === null)
+	if (imageBitmap === null || data === null)
 		return;
 
-	cameraCanvas.width = imageData.width;
-	cameraCanvas.height = imageData.height;
-	cameraCtx.putImageData(imageData, 0, 0);
+	cameraCanvas.width = imageBitmap.width * 3;
+	cameraCanvas.height = imageBitmap.height * 3;
+	cameraCtx.drawImage(imageBitmap, 0, 0, imageBitmap.width * 3, imageBitmap.height * 3);
 
 	for (let y = 0; y < data.length; y++)
 	{
@@ -55,9 +55,9 @@ function renderCamera()
 			const angle2 = -Math.PI - angle1;
 			const angle3 = angle1 + black * Math.PI * 2;
 			const angle4 = angle2 - white * Math.PI * 2;
-			let cx = (x + 0.5) * STONE_SIZE;
-			let cy = (y + 0.5) * STONE_SIZE;
-			let r = STONE_SIZE * 0.4;
+			let cx = (x + 0.5) * STONE_SIZE * 3;
+			let cy = (y + 0.5) * STONE_SIZE * 3;
+			let r = STONE_SIZE * 1.2;
 			cameraCtx.fillStyle = "white";
 			cameraCtx.beginPath();
 			cameraCtx.moveTo(cx, cy);
@@ -82,7 +82,7 @@ function renderCamera()
 
 function renderBoard(board)
 {
-	const scale = 15;
+	const scale = 47;
 	const offset = scale * 0.5;
 	const w = board[0].length;
 	const h = board.length;
