@@ -7,13 +7,13 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 use tch::{
-    nn::{self, Module, OptimizerConfig},
     Device, Kind, Tensor,
+    nn::{self, Module, OptimizerConfig},
 };
 
 mod dataloader;

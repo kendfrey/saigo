@@ -1,31 +1,31 @@
 use std::{future::Future, io::Cursor, sync::Arc};
 
 use app::{
-    config::{self, BoardConfig, CameraConfig, Config, DisplayConfig},
     AppState, DisplayState,
+    config::{self, BoardConfig, CameraConfig, Config, DisplayConfig},
 };
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket},
         Query, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     http::header,
     response::{IntoResponse, Result},
-    routing::{get, post, MethodRouter},
-    Json, Router,
+    routing::{MethodRouter, get, post},
 };
 use error::SaigoError;
 use goban::pieces::{goban::Goban, stones::Color};
-use image::{buffer::ConvertBuffer, ImageFormat, RgbImage, RgbaImage};
+use image::{ImageFormat, RgbImage, RgbaImage, buffer::ConvertBuffer};
 use nokhwa::utils::ApiBackend;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use saigo::ControlMessage;
 use serde::Deserialize;
 use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_stream::{
-    wrappers::{BroadcastStream, WatchStream},
     Stream, StreamExt,
+    wrappers::{BroadcastStream, WatchStream},
 };
 use tower_http::services::ServeDir;
 
@@ -109,7 +109,7 @@ async fn websocket_control(
     // Lock the board configuration
     let _board_config_lock = state.read().await.lock_board_config().await;
 
-    let mut rng = StdRng::from_entropy();
+    let mut rng = StdRng::from_os_rng();
 
     loop {
         match socket.recv().await {
@@ -123,7 +123,7 @@ async fn websocket_control(
                             }
                             ControlMessage::NewTrainingPattern => {
                                 // Reseed the RNG to generate a new training pattern
-                                display_state.send(DisplayState::Training(rng.gen()));
+                                display_state.send(DisplayState::Training(rng.random()));
                             }
                             ControlMessage::NewGame { user_color } => {
                                 // Start a new game

@@ -1,6 +1,6 @@
 use goban::{
     pieces::{goban::Goban, stones::Color, util::coord::Coord},
-    rules::{game::Game, GobanSizes, Move, JAPANESE},
+    rules::{GobanSizes, JAPANESE, Move, game::Game},
 };
 use saigo::SgfCoord;
 
@@ -127,9 +127,8 @@ impl GameState {
 
 /// Checks whether the specified move in the specified game results in the expected board.
 fn is_valid_move(game: &Game, coord: Coord, expected_board: &Goban) -> bool {
-    if let Ok(new_board) = game.clone().try_play(Move::Play(coord.0, coord.1)) {
-        new_board.goban() == expected_board
-    } else {
-        false
+    match game.clone().try_play(Move::Play(coord.0, coord.1)) {
+        Ok(new_board) => new_board.goban() == expected_board,
+        _ => false,
     }
 }

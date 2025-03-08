@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     routing::get,
-    Router,
 };
 use clap::Parser;
 use serde::Deserialize;
 use tokio::{fs, net::TcpListener};
-use tokio_stream::{wrappers::ReadDirStream, StreamExt};
+use tokio_stream::{StreamExt, wrappers::ReadDirStream};
 use tower_http::services::ServeDir;
 
 #[tokio::main]

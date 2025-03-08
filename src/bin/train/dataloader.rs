@@ -1,4 +1,4 @@
-use rand::{seq::SliceRandom, thread_rng};
+use rand::{rng, seq::SliceRandom};
 use tch::{Device, Tensor};
 
 use crate::dataset::Dataset;
@@ -26,7 +26,7 @@ impl<'a> DataLoader<'a> {
             // (6-fold color permutation and 8-fold geometric transformation)
             indexes.extend((0..dataset.len() * 48).map(|index| SampleIndex { dataset: i, index }));
         }
-        indexes.shuffle(&mut thread_rng());
+        indexes.shuffle(&mut rng());
         Self {
             datasets,
             indexes,

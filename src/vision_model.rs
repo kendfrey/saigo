@@ -1,5 +1,5 @@
 use image::Rgb32FImage;
-use tch::{nn, Tensor};
+use tch::{Tensor, nn};
 
 use crate::STONE_SIZE;
 

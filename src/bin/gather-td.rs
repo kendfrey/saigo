@@ -5,9 +5,9 @@ use std::{
 };
 
 use clap::Parser;
-use image::{buffer::ConvertBuffer, RgbImage};
-use saigo::{deserialize_image, ControlMessage};
-use tungstenite::{connect, Message};
+use image::{RgbImage, buffer::ConvertBuffer};
+use saigo::{ControlMessage, deserialize_image};
+use tungstenite::{Message, connect};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();

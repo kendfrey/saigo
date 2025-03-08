@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
-    io::{stdin, BufRead, BufReader},
+    io::{BufRead, BufReader, stdin},
     net::TcpStream,
     sync::LazyLock,
 };
 
 use regex::Regex;
 use saigo::{ControlMessage, GameMessage, SerializableColor, SgfCoord};
-use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
+use tungstenite::{Message, WebSocket, connect, stream::MaybeTlsStream};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gtp = Gtp::<MyState>::new();

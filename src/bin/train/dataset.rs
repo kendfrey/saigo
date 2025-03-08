@@ -1,12 +1,12 @@
 use std::{
-    fs::{read_to_string, DirEntry},
+    fs::{DirEntry, read_to_string},
     path::{Path, PathBuf},
 };
 
 use image::Rgb32FImage;
 use saigo::{
-    vision_model::{read_tensor, LBL_BLACK, LBL_NONE, LBL_OBSCURED, LBL_WHITE},
     STONE_SIZE,
+    vision_model::{LBL_BLACK, LBL_NONE, LBL_OBSCURED, LBL_WHITE, read_tensor},
 };
 use tch::{Device, Kind, Tensor};
 

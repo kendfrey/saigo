@@ -3,29 +3,29 @@ use std::{sync::Arc, time::Duration};
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use game::{GameState, StateUpdate, Status};
 use goban::pieces::{goban::Goban, stones::Color};
-use image::{buffer::ConvertBuffer, Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage};
+use image::{Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage, buffer::ConvertBuffer};
 use imageproc::{
     drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_polygon_mut},
-    geometric_transformations::{warp, warp_into, Interpolation, Projection},
+    geometric_transformations::{Interpolation, Projection, warp, warp_into},
     point::Point,
     rect::Rect,
 };
 use nokhwa::{
+    Camera,
     pixel_format::RgbFormat,
     utils::{ApiBackend, CameraFormat, RequestedFormat, RequestedFormatType, Resolution},
-    Camera,
 };
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use saigo::{
-    vision_model::{read_tensor, VisionModel},
     GameMessage, STONE_SIZE,
+    vision_model::{VisionModel, read_tensor},
 };
 use tch::{
-    nn::{self, Module},
     Device, Kind, Tensor,
+    nn::{self, Module},
 };
 use tokio::{
-    sync::{broadcast, watch, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock},
+    sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, broadcast, watch},
     task,
     time::{self, MissedTickBehavior},
 };
@@ -518,8 +518,8 @@ impl AppState {
         // Draw random circles on a fraction of the intersections
         for x in 0..self.config.board.width.get() {
             for y in 0..self.config.board.height.get() {
-                if rng.gen_bool(0.1) {
-                    let size = rng.gen_range(0.0..1.0);
+                if rng.random_bool(0.1) {
+                    let size = rng.random_range(0.0..1.0);
                     let color = random_color(&mut rng);
                     ctx.fill_circle(x as f32, y as f32, size, color);
                 }
@@ -527,12 +527,12 @@ impl AppState {
         }
 
         // Draw a random solid triangle
-        let x1 = rng.gen_range(0.0..self.config.board.width.get() as f32);
-        let y1 = rng.gen_range(0.0..self.config.board.height.get() as f32);
-        let x2 = rng.gen_range(0.0..self.config.board.width.get() as f32);
-        let y2 = rng.gen_range(0.0..self.config.board.height.get() as f32);
-        let x3 = rng.gen_range(0.0..self.config.board.width.get() as f32);
-        let y3 = rng.gen_range(0.0..self.config.board.height.get() as f32);
+        let x1 = rng.random_range(0.0..self.config.board.width.get() as f32);
+        let y1 = rng.random_range(0.0..self.config.board.height.get() as f32);
+        let x2 = rng.random_range(0.0..self.config.board.width.get() as f32);
+        let y2 = rng.random_range(0.0..self.config.board.height.get() as f32);
+        let x3 = rng.random_range(0.0..self.config.board.width.get() as f32);
+        let y3 = rng.random_range(0.0..self.config.board.height.get() as f32);
         let color = random_color(&mut rng);
 
         ctx.fill_polygon(
@@ -542,9 +542,9 @@ impl AppState {
 
         fn random_color(rng: &mut StdRng) -> Rgba<u8> {
             Rgba([
-                rng.gen_range(0..=255),
-                rng.gen_range(0..=255),
-                rng.gen_range(0..=255),
+                rng.random_range(0..=255),
+                rng.random_range(0..=255),
+                rng.random_range(0..=255),
                 255,
             ])
         }
