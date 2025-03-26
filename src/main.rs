@@ -19,7 +19,7 @@ use goban::pieces::{goban::Goban, stones::Color};
 use image::{ImageFormat, RgbImage, RgbaImage, buffer::ConvertBuffer};
 use nokhwa::utils::ApiBackend;
 use rand::{Rng, SeedableRng, rngs::StdRng};
-use saigo::ControlMessage;
+use saigo::{ControlMessage, Move, PlayerMove};
 use serde::Deserialize;
 use sync::OwnedSender;
 use tokio::{net::TcpListener, sync::RwLock};
@@ -130,21 +130,29 @@ async fn websocket_control(
                                 state.write().await.new_game(user_color.into());
                                 display_state.send(DisplayState::Game);
                             }
-                            ControlMessage::PlayMove { location } => {
+                            ControlMessage::PlayMove {
+                                move_: PlayerMove { move_, player },
+                            } => {
                                 // Play a move
-                                state.write().await.game.play_move(location);
-                                display_state.send(DisplayState::Game);
-                            }
-                            ControlMessage::PlayPass => {
-                                // Pass
-                                state.write().await.game.play_pass();
-                                display_state.send(DisplayState::Game);
-                            }
-                            ControlMessage::EndGame { winner } => {
-                                // Show the game over display
-                                display_state.send(DisplayState::GameOver(
-                                    winner == state.read().await.game.user_color().into(),
-                                ));
+                                let mut state = state.write().await;
+                                if state.game.game.turn() != player.into() {
+                                    state.game.play_external_pass();
+                                }
+                                match move_ {
+                                    Move::Move { location } => {
+                                        state
+                                            .game
+                                            .play_external_move((&location).try_into().unwrap());
+                                        display_state.send(DisplayState::Game);
+                                    }
+                                    Move::Pass => {
+                                        state.game.play_external_pass();
+                                        display_state.send(DisplayState::Game);
+                                    }
+                                    Move::Resign => {
+                                        display_state.send(DisplayState::GameOver(!player));
+                                    }
+                                }
                             }
                         },
                         Err(_) => continue,

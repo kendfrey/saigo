@@ -10,7 +10,7 @@ axum = { version = "0.7.5", features = ["macros", "ws"] }
 clap = { version = "4.5.20", features = ["derive"] }
 confy = "0.6.1"
 ctrlc = "3.4.5"
-goban = "0.18.1"
+goban = "0.20.0"
 image = "0.25.2"
 imageproc = "0.25.0"
 nokhwa = { version = "0.10.5", features = ["input-native", "output-threaded"] }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use regex::Regex;
-use saigo::{ControlMessage, GameMessage, SerializableColor, SgfCoord};
+use saigo::{ControlMessage, Move, PlayerMove, SerializableColor, SgfCoord};
 use tungstenite::{Message, WebSocket, connect, stream::MaybeTlsStream};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,12 +66,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("illegal move".to_string());
         }
 
-        if coord.to_uppercase() == "PASS" {
-            state.send(ControlMessage::PlayPass)?;
+        let move_ = if coord.to_uppercase() == "PASS" {
+            Move::Pass
         } else {
-            let coord = SgfCoord::from_gtp_coord(coord, state.board_size)?;
-            state.send(ControlMessage::PlayMove { location: coord })?;
-        }
+            Move::Move {
+                location: SgfCoord::from_gtp_coord(coord, state.board_size)?,
+            }
+        };
+        state.send(ControlMessage::PlayMove {
+            move_: PlayerMove {
+                move_,
+                player: color,
+            },
+        })?;
 
         Ok("".to_string())
     });
@@ -88,10 +95,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("wrong color".to_string());
         }
 
-        let coord = match state.read()? {
-            GameMessage::Move { location } => location.to_gtp_coord(state.board_size)?,
-            GameMessage::Pass => "pass".to_string(),
-            GameMessage::Resign => "resign".to_string(),
+        let coord = match state.read_from_player(color)? {
+            Move::Move { location } => location.to_gtp_coord(state.board_size)?,
+            Move::Pass => "pass".to_string(),
+            Move::Resign => "resign".to_string(),
         };
 
         Ok(coord)
@@ -149,11 +156,21 @@ impl<'a> MyState<'a> {
     }
 
     /// Reads a message from the game websocket.
-    fn read(&mut self) -> Result<GameMessage, String> {
+    fn read(&mut self) -> Result<PlayerMove, String> {
         let Message::Text(message) = self.game_socket.read().map_err(|e| format!("{}", e))? else {
             return self.read();
         };
         serde_json::from_str(&message).map_err(|e| format!("{}", e))
+    }
+
+    /// Reads a move from the player, ignoring any moves that aren't from the specified player.
+    fn read_from_player(&mut self, player: SerializableColor) -> Result<Move, String> {
+        loop {
+            let move_ = self.read()?;
+            if move_.player == player {
+                return Ok(move_.move_);
+            }
+        }
     }
 }
 

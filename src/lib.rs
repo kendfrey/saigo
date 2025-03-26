@@ -76,7 +76,7 @@ impl SgfCoord {
 }
 
 /// The player color.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(try_from = "&str")]
 pub enum SerializableColor {
     #[serde(rename = "B")]
@@ -135,18 +135,24 @@ pub enum ControlMessage {
         user_color: SerializableColor,
     },
     PlayMove {
-        location: SgfCoord,
-    },
-    PlayPass,
-    EndGame {
-        winner: SerializableColor,
+        #[serde(rename = "move")]
+        move_: PlayerMove,
     },
 }
 
-/// The messages that can be returned from the game websocket.
+/// A move and the player who made it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PlayerMove {
+    #[serde(flatten)]
+    pub move_: Move,
+    pub player: SerializableColor,
+}
+
+/// A move on the board, pass, or resignation.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum GameMessage {
+pub enum Move {
     Move { location: SgfCoord },
     Pass,
     Resign,

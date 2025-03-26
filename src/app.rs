@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
-use game::{GameState, StateUpdate, Status};
+use game::{BoardUpdate, GameState};
 use goban::pieces::{goban::Goban, stones::Color};
 use image::{Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage, buffer::ConvertBuffer};
 use imageproc::{
@@ -17,7 +17,7 @@ use nokhwa::{
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use saigo::{
-    GameMessage, STONE_SIZE,
+    Move, PlayerMove, STONE_SIZE, SerializableColor,
     vision_model::{VisionModel, read_tensor},
 };
 use tch::{
@@ -53,7 +53,7 @@ pub struct AppState {
     board_camera_broadcast: watch::Sender<RgbImage>,
     raw_board_broadcast: watch::Sender<Vec<Vec<VisionModelOutput>>>,
     board_broadcast: watch::Sender<Goban>,
-    game_broadcast: broadcast::Sender<GameMessage>,
+    game_broadcast: broadcast::Sender<PlayerMove>,
     pub game: GameState,
 }
 
@@ -89,7 +89,7 @@ impl AppState {
             raw_board_broadcast,
             board_broadcast,
             game_broadcast,
-            game: GameState::new(width as usize, height as usize, Color::Black),
+            game: GameState::new_vs_external(width as usize, height as usize, Color::Black),
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
@@ -124,7 +124,7 @@ impl AppState {
     }
 
     /// Returns a new receiver for the game broadcast channel.
-    pub fn subscribe_to_game_broadcast(&self) -> broadcast::Receiver<GameMessage> {
+    pub fn subscribe_to_game_broadcast(&self) -> broadcast::Receiver<PlayerMove> {
         self.game_broadcast.subscribe()
     }
 
@@ -282,7 +282,7 @@ impl AppState {
 
     /// Starts a new game.
     pub fn new_game(&mut self, user_color: Color) {
-        self.game = GameState::new(
+        self.game = GameState::new_vs_external(
             self.config.board.width.get() as usize,
             self.config.board.height.get() as usize,
             user_color,
@@ -396,6 +396,7 @@ impl AppState {
             }
 
             let mut current_board = board_broadcast.borrow().clone();
+            let mut proposed_update = None;
 
             while let Ok(()) = board_camera_receiver.changed().await {
                 // Run the neural network on the camera image
@@ -414,24 +415,36 @@ impl AppState {
                     if board != current_board {
                         current_board = board.clone();
                         board_broadcast.send_replace(board);
-                        // If the updated board results in a valid change to the state of the game, broadcast it
-                        let mut state = state_ref.write().await;
-                        match state.game.check_for_move(&current_board) {
-                            StateUpdate::UserMove(coord) => {
-                                let _ = state
-                                    .game_broadcast
-                                    .send(GameMessage::Move { location: coord });
-                            }
-                            StateUpdate::UserPass => {
-                                let _ = state.game_broadcast.send(GameMessage::Pass);
-                            }
-                            StateUpdate::UserResign => {
-                                let _ = state.game_broadcast.send(GameMessage::Resign);
-                            }
-                            StateUpdate::OpponentMovePlayed => {}
-                            StateUpdate::None => {}
+                        // If the updated board results in a valid change to the state of the game,
+                        // wait the specified cooldown before applying it
+                        proposed_update =
+                            state_ref.read().await.game.check_for_move(&current_board);
+                    }
+                    if let Some((update, player, cooldown)) = &mut proposed_update {
+                        if *cooldown > 0 {
+                            // Wait for the move to be stable before applying it
+                            *cooldown -= 1;
+                        } else {
+                            // Apply the move and broadcast it
+                            let mut state = state_ref.write().await;
+                            state.game.apply_update(*update);
+                            let game_move = match *update {
+                                BoardUpdate::Move(coord) => Move::Move {
+                                    location: coord.try_into().unwrap(),
+                                },
+                                BoardUpdate::Pass => Move::Pass,
+                                BoardUpdate::Resign => Move::Resign,
+                                BoardUpdate::PendingMovePlayed(coord) => Move::Move {
+                                    location: coord.try_into().unwrap(),
+                                },
+                            };
+                            let _ = state.game_broadcast.send(PlayerMove {
+                                move_: game_move,
+                                player: (*player).into(),
+                            });
+                            proposed_update = None;
+                            state.display_dirty.send_replace(());
                         }
-                        state.display_dirty.send_replace(());
                     }
                 }
             }
@@ -460,8 +473,8 @@ impl AppState {
             DisplayState::Game => {
                 self.render_game(&mut ctx);
             }
-            DisplayState::GameOver(won) => {
-                self.render_endgame(won, &mut ctx);
+            DisplayState::GameOver(winner) => {
+                self.render_endgame(winner, &mut ctx);
             }
         }
 
@@ -554,16 +567,20 @@ impl AppState {
     fn render_game(&self, ctx: &mut RenderingContext) {
         let width = self.config.board.width.get() as f32;
         let height = self.config.board.height.get() as f32;
-        let (user_turn, highlighted_move) = match self.game.status() {
-            Status::UserTurn => (true, None),
-            Status::OpponentTurn => (false, None),
-            Status::OpponentPlayed(sgf_coord) => (true, Some(sgf_coord)),
-        };
 
         // Draw a white bar on the edge of the board nearest to the current player
-        // Draw the bar in yellow if the player must first play the opponent's last move
-        let top = if user_turn { height - 1.5 } else { -0.5 };
-        let color = if highlighted_move.is_some() {
+        // Draw the bar in yellow if the user must first play the last move
+        let bottom_player = if self.game.user_white && !self.game.user_black {
+            Color::White
+        } else {
+            Color::Black
+        };
+        let top = if self.game.game.turn() == bottom_player {
+            height - 1.5
+        } else {
+            -0.5
+        };
+        let color = if self.game.pending_move.is_some() {
             Rgba([255, 255, 0, 255])
         } else {
             Rgba([255, 255, 255, 255])
@@ -571,27 +588,39 @@ impl AppState {
         ctx.fill_rectangle(-0.5, top, width, 1.0, color);
 
         // If the opponent's last move hasn't been played yet, highlight its location on the board
-        if let Some(coord) = highlighted_move {
-            let (x, y) = coord.try_into().unwrap();
+        if let Some(coord) = self.game.pending_move {
+            let (x, y) = coord;
             ctx.fill_circle(x as f32, y as f32, 0.75, Rgba([0, 0, 0, 255]));
             ctx.fill_circle(x as f32, y as f32, 0.5, Rgba([255, 255, 255, 255]));
         }
     }
 
     /// Renders the game over display.
-    fn render_endgame(&self, won: bool, ctx: &mut RenderingContext) {
-        // Highlight the entire board in green for a win and red for a loss
-        let color: Rgba<u8> = if won {
-            Rgba([0, 255, 0, 255])
+    fn render_endgame(&self, winner: SerializableColor, ctx: &mut RenderingContext) {
+        // Highlight the winner's side of the board in green, and the loser's side in red
+        let bottom_player = if self.game.user_white && !self.game.user_black {
+            SerializableColor::White
         } else {
-            Rgba([255, 0, 0, 255])
+            SerializableColor::Black
+        };
+        let (bottom_color, top_color): (Rgba<u8>, Rgba<u8>) = if winner == bottom_player {
+            (Rgba([0, 255, 0, 255]), Rgba([255, 0, 0, 255]))
+        } else {
+            (Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255]))
         };
         ctx.fill_rectangle(
             -0.5,
+            -0.5 + self.config.board.height.get() as f32 * 0.5,
+            self.config.board.width.get() as f32,
+            self.config.board.height.get() as f32 * 0.5,
+            bottom_color,
+        );
+        ctx.fill_rectangle(
             -0.5,
-            self.config.board.width.get() as f32 - 0.5,
-            self.config.board.height.get() as f32 - 0.5,
-            color,
+            -0.5,
+            self.config.board.width.get() as f32,
+            self.config.board.height.get() as f32 * 0.5,
+            top_color,
         );
     }
 
@@ -649,7 +678,7 @@ pub enum DisplayState {
     Calibrate,
     Training(<StdRng as SeedableRng>::Seed),
     Game,
-    GameOver(bool),
+    GameOver(SerializableColor),
 }
 
 /// Helper struct for rendering the display.
@@ -791,7 +820,7 @@ fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Option<Goban> {
     let mut goban = Goban::new((probabilities.len() as u8, probabilities[0].len() as u8));
     for (y, row) in probabilities.iter().enumerate() {
         for (x, (empty, black, white, _)) in row.iter().enumerate() {
-            let color = if *empty > 0.9 {
+            let color = if *empty > 0.5 {
                 continue;
             } else if *black > 0.9 {
                 Color::Black

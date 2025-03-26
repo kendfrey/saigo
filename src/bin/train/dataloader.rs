@@ -37,7 +37,7 @@ impl<'a> DataLoader<'a> {
     }
 }
 
-impl<'a> Iterator for DataLoader<'a> {
+impl Iterator for DataLoader<'_> {
     type Item = (Tensor, Tensor);
 
     fn next(&mut self) -> Option<Self::Item> {
