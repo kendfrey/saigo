@@ -6,8 +6,6 @@ const ctx = canvas.getContext("2d");
 const ws = new WebSocket(`ws://${location.host}/ws/display`);
 ws.addEventListener("message", onMessage);
 
-wakeLock();
-
 async function onMessage(event)
 {
 	const buffer = await event.data.arrayBuffer();
@@ -15,16 +13,25 @@ async function onMessage(event)
 	canvas.width = imageData.width;
 	canvas.height = imageData.height;
 	ctx.putImageData(imageData, 0, 0);
+	wakeLock();
 }
 
+let sentinel = null;
 async function wakeLock()
 {
+	if (sentinel !== null)
+		return;
+
 	try
 	{
-		await navigator.wakeLock.request();
+		sentinel = await navigator.wakeLock.request();
+		sentinel.addEventListener("release", () =>
+		{
+			sentinel = null;
+		});
 	}
-	catch (_)
+	catch (e)
 	{
-		
+		console.warn("Failed to acquire wake lock:", e);
 	}
 }
