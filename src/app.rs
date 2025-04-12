@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use game::{BoardUpdate, GameState};
-use goban::pieces::{goban::Goban, stones::Color};
+use goban::pieces::{goban::Goban, stones::Color, util::coord::Coord};
 use image::{Rgb, Rgb32FImage, RgbImage, Rgba, RgbaImage, buffer::ConvertBuffer};
 use imageproc::{
     drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_polygon_mut},
@@ -55,6 +55,7 @@ pub struct AppState {
     board_broadcast: watch::Sender<Goban>,
     game_broadcast: broadcast::Sender<PlayerMove>,
     pub game: GameState,
+    troublesome_points: Vec<Vec<u8>>,
 }
 
 impl AppState {
@@ -90,6 +91,7 @@ impl AppState {
             board_broadcast,
             game_broadcast,
             game: GameState::new_vs_external(width as usize, height as usize, Color::Black),
+            troublesome_points: vec![vec![0u8; width as usize]; height as usize],
         };
         let state_ref = Arc::new(RwLock::new(state));
         Self::spawn_render_loop(state_ref.clone());
@@ -140,6 +142,7 @@ impl AppState {
         self.config.save(None, false)?;
         self.display_dirty.send_replace(());
         self.camera_dirty.send_replace(());
+        self.on_board_size_changed();
         Ok(())
     }
 
@@ -156,6 +159,7 @@ impl AppState {
         }
         self.config.board = board;
         self.display_dirty.send_replace(());
+        self.on_board_size_changed();
         self.config.save_fast()
     }
 
@@ -172,6 +176,14 @@ impl AppState {
             .map_err(|_| {
                 SaigoError::Locked("You can't edit the board size while it is in use.".to_string())
             })
+    }
+
+    /// Resets certain board size-specific data structures.
+    fn on_board_size_changed(&mut self) {
+        self.troublesome_points = vec![
+            vec![0u8; self.config.board.width.get() as usize];
+            self.config.board.height.get() as usize
+        ];
     }
 
     /// Gets the current display configuration.
@@ -305,21 +317,29 @@ impl AppState {
                 display_dirty_receiver = state.display_dirty.subscribe();
                 display_dirty_receiver.mark_changed();
             }
+            let mut interval = time::interval(Duration::from_millis(1000));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval.reset();
+            let mut even_tick = false;
 
             // Wait for the state to update
             loop {
                 let result = tokio::select! {
-                    r = display_state_receiver.changed() => r,
-                    r = display_dirty_receiver.changed() => r,
+                    r = display_state_receiver.changed() => r.map(|_| false),
+                    r = display_dirty_receiver.changed() => r.map(|_| false),
+                    _ = interval.tick() => Ok(true),
                 };
                 match result {
-                    Ok(()) => {
+                    Ok(tick) => {
                         // If the state changes, rerender the display
                         display_state_receiver.mark_unchanged();
                         display_dirty_receiver.mark_unchanged();
+                        if tick {
+                            even_tick = !even_tick;
+                        }
                         let display_state = *display_state_receiver.borrow();
                         let state = state_ref.read().await;
-                        broadcast.send_replace(state.render(display_state));
+                        broadcast.send_replace(state.render(display_state, even_tick));
                     }
                     Err(_) => {
                         // If the channel is closed, stop rendering
@@ -396,54 +416,101 @@ impl AppState {
             }
 
             let mut current_board = board_broadcast.borrow().clone();
-            let mut proposed_update = None;
+            let mut proposed_update = Err(vec![]);
 
             while let Ok(()) = board_camera_receiver.changed().await {
                 // Run the neural network on the camera image
-                let reference = match &state_ref.read().await.config.camera.reference_image {
-                    Some(img) => img.convert(),
-                    None => continue,
-                };
+                let reference;
+                let mut troublesome_points;
+                {
+                    let state = state_ref.read().await;
+                    reference = match &state.config.camera.reference_image {
+                        Some(img) => img.convert(),
+                        None => continue,
+                    };
+                    troublesome_points = state.troublesome_points.clone();
+                }
                 let img = board_camera_receiver.borrow_and_update().convert();
                 let result =
                     task::block_in_place(|| run_vision_model(&model, img, reference, device));
                 let board = get_board(&result);
                 // Broadcast the raw output of the neural network
                 raw_board_broadcast.send_replace(result);
-                if let Some(board) = board {
-                    // If the board has changed, broadcast it
-                    if board != current_board {
-                        current_board = board.clone();
-                        board_broadcast.send_replace(board);
-                        // If the updated board results in a valid change to the state of the game,
-                        // wait the specified cooldown before applying it
-                        proposed_update =
-                            state_ref.read().await.game.check_for_move(&current_board);
+                match board {
+                    Ok(board) => {
+                        // If the board has changed, broadcast it
+                        if board != current_board {
+                            current_board = board.clone();
+                            board_broadcast.send_replace(board);
+                            // If the updated board results in a valid change to the state of the game,
+                            // wait the specified cooldown before applying it
+                            proposed_update =
+                                state_ref.read().await.game.check_for_move(&current_board);
+                        }
+                        match &mut proposed_update {
+                            Ok((update, player, cooldown)) => {
+                                if *cooldown > 0 {
+                                    // Wait for the move to be stable before applying it
+                                    *cooldown -= 1;
+                                } else {
+                                    // Apply the move and broadcast it
+                                    let mut state = state_ref.write().await;
+                                    state.game.apply_update(*update);
+                                    let game_move = match *update {
+                                        BoardUpdate::Move(coord) => Move::Move {
+                                            location: coord.try_into().unwrap(),
+                                        },
+                                        BoardUpdate::Pass => Move::Pass,
+                                        BoardUpdate::Resign => Move::Resign,
+                                        BoardUpdate::PendingMovePlayed(coord) => Move::Move {
+                                            location: coord.try_into().unwrap(),
+                                        },
+                                    };
+                                    let _ = state.game_broadcast.send(PlayerMove {
+                                        move_: game_move,
+                                        player: (*player).into(),
+                                    });
+                                    proposed_update = Err(vec![]);
+                                    state.display_dirty.send_replace(());
+                                }
+                            }
+                            Err(incorrect_coords) => {
+                                // If some stones are out of place, track the incorrect points
+                                handle_troublesome_coords(
+                                    incorrect_coords,
+                                    &mut troublesome_points,
+                                );
+                            }
+                        }
                     }
-                    if let Some((update, player, cooldown)) = &mut proposed_update {
-                        if *cooldown > 0 {
-                            // Wait for the move to be stable before applying it
-                            *cooldown -= 1;
-                        } else {
-                            // Apply the move and broadcast it
-                            let mut state = state_ref.write().await;
-                            state.game.apply_update(*update);
-                            let game_move = match *update {
-                                BoardUpdate::Move(coord) => Move::Move {
-                                    location: coord.try_into().unwrap(),
-                                },
-                                BoardUpdate::Pass => Move::Pass,
-                                BoardUpdate::Resign => Move::Resign,
-                                BoardUpdate::PendingMovePlayed(coord) => Move::Move {
-                                    location: coord.try_into().unwrap(),
-                                },
-                            };
-                            let _ = state.game_broadcast.send(PlayerMove {
-                                move_: game_move,
-                                player: (*player).into(),
-                            });
-                            proposed_update = None;
-                            state.display_dirty.send_replace(());
+                    Err(obscured_coords) => {
+                        // If the board is obscured in a small area (in case it's not actually obscured but
+                        // some stones are out of place), track the obscured points
+                        if obscured_coords.len() < 3 {
+                            handle_troublesome_coords(&obscured_coords, &mut troublesome_points);
+                        }
+                    }
+                }
+
+                // Decay the troublesome points
+                for row in &mut troublesome_points {
+                    for point in row {
+                        if *point > 0 {
+                            *point -= 1;
+                        }
+                    }
+                }
+
+                state_ref.write().await.troublesome_points = troublesome_points;
+
+                /// Marks the specified coordinates as troublesome.
+                fn handle_troublesome_coords(
+                    coords: &[(u8, u8)],
+                    troublesome_points: &mut [Vec<u8>],
+                ) {
+                    for (x, y) in coords {
+                        if troublesome_points[*y as usize][*x as usize] < 20 {
+                            troublesome_points[*y as usize][*x as usize] += 3;
                         }
                     }
                 }
@@ -452,15 +519,15 @@ impl AppState {
     }
 
     /// Renders the display.
-    fn render(&self, display_state: DisplayState) -> RgbaImage {
-        let raw = self.render_raw(display_state);
+    fn render(&self, display_state: DisplayState, even_tick: bool) -> RgbaImage {
+        let raw = self.render_raw(display_state, even_tick);
         let proj = self.get_display_projection();
         warp(&raw, &proj, Interpolation::Bilinear, Rgba([0, 0, 0, 0]))
     }
 
     /// Renders the display in a normalized position.
     /// This will later be warped according to the display configuration.
-    fn render_raw(&self, display_state: DisplayState) -> RgbaImage {
+    fn render_raw(&self, display_state: DisplayState, even_tick: bool) -> RgbaImage {
         let mut ctx = self.create_rendering_context();
 
         match display_state {
@@ -471,7 +538,7 @@ impl AppState {
                 self.render_training(seed, &mut ctx);
             }
             DisplayState::Game => {
-                self.render_game(&mut ctx);
+                self.render_game(&mut ctx, even_tick);
             }
             DisplayState::GameOver(winner) => {
                 self.render_endgame(winner, &mut ctx);
@@ -564,7 +631,7 @@ impl AppState {
     }
 
     /// Renders the display for the active game.
-    fn render_game(&self, ctx: &mut RenderingContext) {
+    fn render_game(&self, ctx: &mut RenderingContext, even_tick: bool) {
         let width = self.config.board.width.get() as f32;
         let height = self.config.board.height.get() as f32;
 
@@ -581,17 +648,30 @@ impl AppState {
             -0.5
         };
         let color = if self.game.pending_move.is_some() {
-            Rgba([255, 255, 0, 255])
+            Rgba([127, 127, 0, 255])
         } else {
-            Rgba([255, 255, 255, 255])
+            Rgba([127, 127, 127, 255])
         };
         ctx.fill_rectangle(-0.5, top, width, 1.0, color);
 
-        // If the opponent's last move hasn't been played yet, highlight its location on the board
-        if let Some(coord) = self.game.pending_move {
-            let (x, y) = coord;
-            ctx.fill_circle(x as f32, y as f32, 0.75, Rgba([0, 0, 0, 255]));
-            ctx.fill_circle(x as f32, y as f32, 0.5, Rgba([255, 255, 255, 255]));
+        // Blink points that the vision model is finding difficult
+        if even_tick {
+            for y in 0..self.config.board.height.get() {
+                for x in 0..self.config.board.width.get() {
+                    if self.troublesome_points[y as usize][x as usize] >= 10 {
+                        ctx.fill_circle(x as f32, y as f32, 1.5, Rgba([255, 0, 0, 255]));
+                    }
+                }
+            }
+        }
+
+        // If the opponent's last move hasn't been played yet, blink its location on the board
+        if !even_tick {
+            if let Some(coord) = self.game.pending_move {
+                let (x, y) = coord;
+                ctx.fill_circle(x as f32, y as f32, 0.75, Rgba([0, 0, 0, 255]));
+                ctx.fill_circle(x as f32, y as f32, 0.375, Rgba([255, 255, 255, 255]));
+            }
         }
     }
 
@@ -815,11 +895,13 @@ fn run_vision_model(
     result
 }
 
-/// Calculates the most likely state of the board, or returns None if part of the board is obscured.
-fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Option<Goban> {
+/// Calculates the most likely state of the board, or returns the list of obscured points.
+fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Result<Goban, Vec<Coord>> {
     let mut goban = Goban::new((probabilities.len() as u8, probabilities[0].len() as u8));
+    let mut obscured_coords = Vec::new();
     for (y, row) in probabilities.iter().enumerate() {
         for (x, (empty, black, white, _)) in row.iter().enumerate() {
+            let coord = (x as u8, y as u8);
             let color = if *empty > 0.5 {
                 continue;
             } else if *black > 0.9 {
@@ -827,10 +909,15 @@ fn get_board(probabilities: &[Vec<VisionModelOutput>]) -> Option<Goban> {
             } else if *white > 0.9 {
                 Color::White
             } else {
-                return None;
+                obscured_coords.push(coord);
+                continue;
             };
-            goban.push((x as u8, y as u8), color);
+            goban.push(coord, color);
         }
     }
-    Some(goban)
+    if !obscured_coords.is_empty() {
+        Err(obscured_coords)
+    } else {
+        Ok(goban)
+    }
 }

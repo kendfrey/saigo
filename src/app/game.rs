@@ -33,7 +33,11 @@ impl GameState {
 
     /// Checks whether the user has made a move on the physical board, and if so,
     /// returns the corresponding action and a cooldown to wait before committing to the move.
-    pub fn check_for_move(&self, new_board: &Goban) -> Option<(BoardUpdate, Color, u32)> {
+    /// Otherwise, returns a list of incorrect coordinates.
+    pub fn check_for_move(
+        &self,
+        new_board: &Goban,
+    ) -> Result<(BoardUpdate, Color, u32), Vec<Coord>> {
         let user_turn = match self.game.turn() {
             Color::Black => self.user_black,
             Color::White => self.user_white,
@@ -43,16 +47,21 @@ impl GameState {
         } else if user_turn {
             self.check_for_user_move(new_board)
         } else {
-            None
+            Err(vec![])
         }
     }
 
     /// Checks whether the user has made a new move on the physical board, and if so,
     /// returns the corresponding action and a cooldown to wait before committing to the move.
-    fn check_for_user_move(&self, new_board: &Goban) -> Option<(BoardUpdate, Color, u32)> {
+    /// Otherwise, returns a list of incorrect coordinates.
+    fn check_for_user_move(
+        &self,
+        new_board: &Goban,
+    ) -> Result<(BoardUpdate, Color, u32), Vec<Coord>> {
         // Record all stones that weren't on the board as of the last known game state
         let mut new_player_stones = vec![];
         let mut new_opponent_stones = vec![];
+        let mut incorrect_coords = vec![];
         let (width, height) = new_board.size();
         for x in 0..width {
             for y in 0..height {
@@ -62,6 +71,9 @@ impl GameState {
                     new_player_stones.push((x, y));
                 } else if new_stone == Some(!self.game.turn()) && old_stone.is_none() {
                     new_opponent_stones.push((x, y));
+                }
+                if new_stone != old_stone {
+                    incorrect_coords.push((x, y));
                 }
             }
         }
@@ -76,34 +88,46 @@ impl GameState {
                 } else {
                     2
                 };
-            Some((BoardUpdate::Move(coord), self.game.turn(), cooldown))
+            Ok((BoardUpdate::Move(coord), self.game.turn(), cooldown))
         } else if new_player_stones.len() == 2 && new_opponent_stones.is_empty() {
             // If the user places two stones of their own color, treat it as a pass
-            Some((BoardUpdate::Pass, self.game.turn(), 20))
+            Ok((BoardUpdate::Pass, self.game.turn(), 20))
         } else if new_opponent_stones.len() == 2 && new_player_stones.is_empty() {
             // If the user places two stones of the opponent's color, treat it as a resignation
-            Some((BoardUpdate::Resign, self.game.turn(), 20))
+            Ok((BoardUpdate::Resign, self.game.turn(), 20))
         } else {
-            None
+            Err(incorrect_coords)
         }
     }
 
     /// Checks whether the user has placed the pending move on the physical board, and if so,
     /// returns the corresponding action and a cooldown to wait before committing to the move.
+    /// Otherwise, returns a list of incorrect coordinates.
     fn check_for_pending_move(
         &self,
         new_board: &Goban,
         pending_move: Coord,
-    ) -> Option<(BoardUpdate, Color, u32)> {
+    ) -> Result<(BoardUpdate, Color, u32), Vec<Coord>> {
         // If the user places an external move, return it.
         if new_board == self.game.goban() {
-            Some((
+            Ok((
                 BoardUpdate::PendingMovePlayed(pending_move),
                 !self.game.turn(),
-                1,
+                2,
             ))
         } else {
-            None
+            let mut incorrect_coords = vec![];
+            let (width, height) = new_board.size();
+            for x in 0..width {
+                for y in 0..height {
+                    let new_stone = new_board.get_color((x, y));
+                    let old_stone = self.game.goban().get_color((x, y));
+                    if new_stone != old_stone && pending_move != (x, y) {
+                        incorrect_coords.push((x, y));
+                    }
+                }
+            }
+            Err(incorrect_coords)
         }
     }
 
