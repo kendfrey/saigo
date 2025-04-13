@@ -135,22 +135,24 @@ async fn websocket_control(
                             } => {
                                 // Play a move
                                 let mut state = state.write().await;
-                                if state.game.game.turn() != player.into() {
-                                    state.game.play_external_pass();
-                                }
-                                match move_ {
-                                    Move::Move { location } => {
-                                        state
-                                            .game
-                                            .play_external_move((&location).try_into().unwrap());
-                                        display_state.send(DisplayState::Game);
+                                if let Some(game) = &mut state.game {
+                                    if game.game.turn() != player.into() {
+                                        game.play_external_pass();
                                     }
-                                    Move::Pass => {
-                                        state.game.play_external_pass();
-                                        display_state.send(DisplayState::Game);
-                                    }
-                                    Move::Resign => {
-                                        display_state.send(DisplayState::GameOver(!player));
+                                    match move_ {
+                                        Move::Move { location } => {
+                                            game.play_external_move(
+                                                (&location).try_into().unwrap(),
+                                            );
+                                            display_state.send(DisplayState::Game);
+                                        }
+                                        Move::Pass => {
+                                            game.play_external_pass();
+                                            display_state.send(DisplayState::Game);
+                                        }
+                                        Move::Resign => {
+                                            display_state.send(DisplayState::GameOver(!player));
+                                        }
                                     }
                                 }
                             }
@@ -324,7 +326,7 @@ async fn post_config_load(
     State(state): State<Arc<RwLock<AppState>>>,
     Query(Profile { profile }): Query<Profile>,
 ) -> Result<()> {
-    state.write().await.load_config(&profile)?;
+    AppState::load_config(&state, &profile).await?;
     Ok(())
 }
 
@@ -344,7 +346,7 @@ async fn put_config_board(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(board): Json<BoardConfig>,
 ) -> Result<()> {
-    state.write().await.set_board_config(board)?;
+    AppState::set_board_config(&state, board).await?;
     Ok(())
 }
 

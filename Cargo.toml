@@ -22,5 +22,6 @@ serde_json = "1.0.124"
 tch = "0.15.0"
 tokio = { version = "1.39.2", features = ["rt-multi-thread"] }
 tokio-stream = { version = "0.1.16", features = ["fs", "sync"] }
+tokio-util = "0.7.14"
 tower-http = { version = "0.5.2", features = ["fs"] }
 tungstenite = "0.24.0"

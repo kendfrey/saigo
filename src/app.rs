@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{mem::take, sync::Arc, time::Duration};
 
 use config::{BoardConfig, CameraConfig, Config, DisplayConfig};
 use game::{BoardUpdate, GameState};
@@ -26,9 +26,10 @@ use tch::{
 };
 use tokio::{
     sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, broadcast, watch},
-    task,
+    task::{self, JoinHandle},
     time::{self, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::SaigoError,
@@ -54,7 +55,9 @@ pub struct AppState {
     raw_board_broadcast: watch::Sender<Vec<Vec<VisionModelOutput>>>,
     board_broadcast: watch::Sender<Goban>,
     game_broadcast: broadcast::Sender<PlayerMove>,
-    pub game: GameState,
+    cancel: CancellationToken,
+    background_tasks: Vec<JoinHandle<()>>,
+    pub game: Option<GameState>,
     troublesome_points: Vec<Vec<u8>>,
 }
 
@@ -90,14 +93,48 @@ impl AppState {
             raw_board_broadcast,
             board_broadcast,
             game_broadcast,
-            game: GameState::new_vs_external(width as usize, height as usize, Color::Black),
+            cancel: CancellationToken::default(),
+            background_tasks: vec![],
+            game: None,
             troublesome_points: vec![vec![0u8; width as usize]; height as usize],
         };
         let state_ref = Arc::new(RwLock::new(state));
-        Self::spawn_render_loop(state_ref.clone());
-        Self::spawn_camera_loop(state_ref.clone());
-        Self::spawn_board_vision_loop(state_ref.clone());
+        Self::start_background_tasks(&state_ref);
         state_ref
+    }
+
+    /// Starts the background tasks.
+    fn start_background_tasks(state_ref: &Arc<RwLock<Self>>) {
+        // This needs to be blocking because it happens during drop
+        let mut state = task::block_in_place(|| state_ref.blocking_write());
+        let cancel = CancellationToken::new();
+        state
+            .background_tasks
+            .push(Self::spawn_render_loop(state_ref.clone(), cancel.clone()));
+        state
+            .background_tasks
+            .push(Self::spawn_camera_loop(state_ref.clone(), cancel.clone()));
+        state.background_tasks.push(Self::spawn_board_vision_loop(
+            state_ref.clone(),
+            cancel.clone(),
+        ));
+        state.cancel = cancel;
+    }
+
+    /// Stops all background tasks.
+    async fn stop_background_tasks(state_ref: &Arc<RwLock<Self>>) -> RestartBackgroundTasksOnDrop {
+        let cancel;
+        let tasks;
+        {
+            let mut state = state_ref.write().await;
+            cancel = state.cancel.clone();
+            tasks = take(&mut state.background_tasks);
+        }
+        cancel.cancel();
+        for task in tasks {
+            let _ = task.await;
+        }
+        RestartBackgroundTasksOnDrop(state_ref.clone())
     }
 
     /// Returns a new receiver for the display broadcast channel.
@@ -136,13 +173,17 @@ impl AppState {
     }
 
     /// Loads the configuration from the specified profile.
-    pub fn load_config(&mut self, profile: &str) -> Result<(), SaigoError> {
-        let _guard = self.write_board_config()?;
-        self.config = Config::load(Some(profile))?;
-        self.config.save(None, false)?;
-        self.display_dirty.send_replace(());
-        self.camera_dirty.send_replace(());
-        self.on_board_size_changed();
+    pub async fn load_config(
+        state_ref: &Arc<RwLock<Self>>,
+        profile: &str,
+    ) -> Result<(), SaigoError> {
+        let _guard = Self::write_board_config(state_ref).await?;
+        let mut state = state_ref.write().await;
+        state.config = Config::load(Some(profile))?;
+        state.config.save(None, false)?;
+        state.display_dirty.send_replace(());
+        state.camera_dirty.send_replace(());
+        state.on_board_config_changed();
         Ok(())
     }
 
@@ -152,15 +193,19 @@ impl AppState {
     }
 
     /// Sets the board configuration.
-    pub fn set_board_config(&mut self, board: BoardConfig) -> Result<(), SaigoError> {
-        let _guard = self.write_board_config()?;
-        if self.config.board.width != board.width || self.config.board.height != board.height {
-            self.config.camera.reference_image = None;
+    pub async fn set_board_config(
+        state_ref: &Arc<RwLock<Self>>,
+        board: BoardConfig,
+    ) -> Result<(), SaigoError> {
+        let _guard = Self::write_board_config(state_ref).await?;
+        let mut state = state_ref.write().await;
+        if state.config.board.width != board.width || state.config.board.height != board.height {
+            state.config.camera.reference_image = None;
         }
-        self.config.board = board;
-        self.display_dirty.send_replace(());
-        self.on_board_size_changed();
-        self.config.save_fast()
+        state.config.board = board;
+        state.config.save(None, false)?;
+        state.on_board_config_changed();
+        Ok(())
     }
 
     /// Locks the board configuration to prevent changes.
@@ -168,18 +213,26 @@ impl AppState {
         self.board_config_lock.clone().read_owned().await
     }
 
-    /// Checks whether the board configuration is locked.
-    pub fn write_board_config(&self) -> Result<OwnedRwLockWriteGuard<()>, SaigoError> {
-        self.board_config_lock
+    /// Checks whether the board configuration is locked and stops the background tasks if not.
+    async fn write_board_config(
+        state_ref: &Arc<RwLock<Self>>,
+    ) -> Result<(OwnedRwLockWriteGuard<()>, RestartBackgroundTasksOnDrop), SaigoError> {
+        let guard = state_ref
+            .read()
+            .await
+            .board_config_lock
             .clone()
             .try_write_owned()
             .map_err(|_| {
                 SaigoError::Locked("You can't edit the board size while it is in use.".to_string())
-            })
+            })?;
+        let tasks_guard = Self::stop_background_tasks(state_ref).await;
+        Ok((guard, tasks_guard))
     }
 
     /// Resets certain board size-specific data structures.
-    fn on_board_size_changed(&mut self) {
+    fn on_board_config_changed(&mut self) {
+        self.game = None;
         self.troublesome_points = vec![
             vec![0u8; self.config.board.width.get() as usize];
             self.config.board.height.get() as usize
@@ -294,15 +347,18 @@ impl AppState {
 
     /// Starts a new game.
     pub fn new_game(&mut self, user_color: Color) {
-        self.game = GameState::new_vs_external(
+        self.game = Some(GameState::new_vs_external(
             self.config.board.width.get() as usize,
             self.config.board.height.get() as usize,
             user_color,
-        );
+        ));
     }
 
     /// Spawns the renderer in a background task.
-    fn spawn_render_loop(state_ref: Arc<RwLock<AppState>>) {
+    fn spawn_render_loop(
+        state_ref: Arc<RwLock<Self>>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let broadcast;
             let mut display_state_receiver;
@@ -323,7 +379,7 @@ impl AppState {
             let mut even_tick = false;
 
             // Wait for the state to update
-            loop {
+            while !cancel.is_cancelled() {
                 let result = tokio::select! {
                     r = display_state_receiver.changed() => r.map(|_| false),
                     r = display_dirty_receiver.changed() => r.map(|_| false),
@@ -347,11 +403,14 @@ impl AppState {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Spawns the camera capture in a background task.
-    fn spawn_camera_loop(state_ref: Arc<RwLock<AppState>>) {
+    fn spawn_camera_loop(
+        state_ref: Arc<RwLock<Self>>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let camera_broadcast;
             let board_camera_broadcast;
@@ -370,7 +429,7 @@ impl AppState {
             // Limit the frame rate to 10 FPS
             let mut interval = time::interval(Duration::from_millis(100));
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            loop {
+            while !cancel.is_cancelled() {
                 interval.tick().await;
 
                 // Save work if no one is listening anyway
@@ -394,11 +453,14 @@ impl AppState {
                     board_camera_broadcast.send_replace(board_frame);
                 }
             }
-        });
+        })
     }
 
     /// Spawns the board vision in a background task.
-    fn spawn_board_vision_loop(state_ref: Arc<RwLock<AppState>>) {
+    fn spawn_board_vision_loop(
+        state_ref: Arc<RwLock<Self>>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let device = Device::cuda_if_available();
             let mut vs = nn::VarStore::new(device);
@@ -419,6 +481,9 @@ impl AppState {
             let mut proposed_update = Err(vec![]);
 
             while let Ok(()) = board_camera_receiver.changed().await {
+                if cancel.is_cancelled() {
+                    break;
+                }
                 // Run the neural network on the camera image
                 let reference;
                 let mut troublesome_points;
@@ -444,8 +509,12 @@ impl AppState {
                             board_broadcast.send_replace(board);
                             // If the updated board results in a valid change to the state of the game,
                             // wait the specified cooldown before applying it
-                            proposed_update =
-                                state_ref.read().await.game.check_for_move(&current_board);
+                            proposed_update = state_ref
+                                .read()
+                                .await
+                                .game
+                                .as_ref()
+                                .map_or(Err(vec![]), |g| g.check_for_move(&current_board));
                         }
                         match &mut proposed_update {
                             Ok((update, player, cooldown)) => {
@@ -455,23 +524,25 @@ impl AppState {
                                 } else {
                                     // Apply the move and broadcast it
                                     let mut state = state_ref.write().await;
-                                    state.game.apply_update(*update);
-                                    let game_move = match *update {
-                                        BoardUpdate::Move(coord) => Move::Move {
-                                            location: coord.try_into().unwrap(),
-                                        },
-                                        BoardUpdate::Pass => Move::Pass,
-                                        BoardUpdate::Resign => Move::Resign,
-                                        BoardUpdate::PendingMovePlayed(coord) => Move::Move {
-                                            location: coord.try_into().unwrap(),
-                                        },
-                                    };
-                                    let _ = state.game_broadcast.send(PlayerMove {
-                                        move_: game_move,
-                                        player: (*player).into(),
-                                    });
+                                    if let Some(game) = &mut state.game {
+                                        game.apply_update(*update);
+                                        let game_move = match *update {
+                                            BoardUpdate::Move(coord) => Move::Move {
+                                                location: coord.try_into().unwrap(),
+                                            },
+                                            BoardUpdate::Pass => Move::Pass,
+                                            BoardUpdate::Resign => Move::Resign,
+                                            BoardUpdate::PendingMovePlayed(coord) => Move::Move {
+                                                location: coord.try_into().unwrap(),
+                                            },
+                                        };
+                                        let _ = state.game_broadcast.send(PlayerMove {
+                                            move_: game_move,
+                                            player: (*player).into(),
+                                        });
+                                        state.display_dirty.send_replace(());
+                                    }
                                     proposed_update = Err(vec![]);
-                                    state.display_dirty.send_replace(());
                                 }
                             }
                             Err(incorrect_coords) => {
@@ -515,7 +586,7 @@ impl AppState {
                     }
                 }
             }
-        });
+        })
     }
 
     /// Renders the display.
@@ -634,20 +705,23 @@ impl AppState {
     fn render_game(&self, ctx: &mut RenderingContext, even_tick: bool) {
         let width = self.config.board.width.get() as f32;
         let height = self.config.board.height.get() as f32;
+        let Some(game) = &self.game else {
+            return;
+        };
 
         // Draw a white bar on the edge of the board nearest to the current player
         // Draw the bar in yellow if the user must first play the last move
-        let bottom_player = if self.game.user_white && !self.game.user_black {
+        let bottom_player = if game.user_white && !game.user_black {
             Color::White
         } else {
             Color::Black
         };
-        let top = if self.game.game.turn() == bottom_player {
+        let top = if game.game.turn() == bottom_player {
             height - 1.5
         } else {
             -0.5
         };
-        let color = if self.game.pending_move.is_some() {
+        let color = if game.pending_move.is_some() {
             Rgba([127, 127, 0, 255])
         } else {
             Rgba([127, 127, 127, 255])
@@ -667,7 +741,7 @@ impl AppState {
 
         // If the opponent's last move hasn't been played yet, blink its location on the board
         if !even_tick {
-            if let Some(coord) = self.game.pending_move {
+            if let Some(coord) = game.pending_move {
                 let (x, y) = coord;
                 ctx.fill_circle(x as f32, y as f32, 0.75, Rgba([0, 0, 0, 255]));
                 ctx.fill_circle(x as f32, y as f32, 0.375, Rgba([255, 255, 255, 255]));
@@ -677,8 +751,12 @@ impl AppState {
 
     /// Renders the game over display.
     fn render_endgame(&self, winner: SerializableColor, ctx: &mut RenderingContext) {
+        let Some(game) = &self.game else {
+            return;
+        };
+
         // Highlight the winner's side of the board in green, and the loser's side in red
-        let bottom_player = if self.game.user_white && !self.game.user_black {
+        let bottom_player = if game.user_white && !game.user_black {
             SerializableColor::White
         } else {
             SerializableColor::Black
@@ -748,6 +826,15 @@ impl AppState {
             self.config.display.image_width.get() as f32 / self.config.board.width.get() as f32,
             self.config.display.image_height.get() as f32 / self.config.board.height.get() as f32,
         ) * 0.99
+    }
+}
+
+/// Adds drop glue to ensure background tasks are restarted after changing the configuration.
+struct RestartBackgroundTasksOnDrop(Arc<RwLock<AppState>>);
+
+impl Drop for RestartBackgroundTasksOnDrop {
+    fn drop(&mut self) {
+        AppState::start_background_tasks(&self.0);
     }
 }
 

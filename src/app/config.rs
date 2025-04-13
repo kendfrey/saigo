@@ -49,9 +49,10 @@ impl Config {
             Some(reference_image) => {
                 reference_image.save(full_path)?;
             }
-            None => {
-                fs::remove_file(full_path)?;
-            }
+            None => match fs::remove_file(full_path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                r => r,
+            }?,
         }
         Ok(())
     }
