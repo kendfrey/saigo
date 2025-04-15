@@ -257,10 +257,26 @@ async fn stream_to_socket(
     mut stream: impl Stream<Item = Message> + Unpin + Send,
     mut socket: WebSocket,
 ) {
-    while let Some(message) = stream.next().await {
+    while let Some(message) = next_message(&mut stream, &mut socket).await {
         if socket.send(message).await.is_err() {
             // If the message fails to send, close the socket
             return;
+        }
+    }
+
+    /// Gets the next message from the stream, short-circuiting to None if the socket closes.
+    async fn next_message(
+        stream: &mut (impl Stream<Item = Message> + Unpin),
+        socket: &mut WebSocket,
+    ) -> Option<Message> {
+        loop {
+            tokio::select! {
+                r = stream.next() => return r,
+                r = socket.recv() => match r {
+                    Some(_) => continue,
+                    None => return None,
+                }
+            }
         }
     }
 }
