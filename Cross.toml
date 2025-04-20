@@ -1,0 +1,9 @@
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install --assume-yes wget unzip",
+	"wget https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.2.0%2Bcu118.zip",
+	"unzip libtorch-cxx11-abi-shared-with-deps-2.2.0+cu118.zip",
+]
+
+[target.x86_64-unknown-linux-gnu.env]
+passthrough = ["LIBTORCH=/libtorch"]
