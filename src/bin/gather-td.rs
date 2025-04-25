@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Press Ctrl+C to exit.");
 
-    let interval = Duration::from_secs(5);
+    let interval = Duration::from_secs(2);
     let mut next_capture = Instant::now() + interval;
     let mut num = 0;
     loop {

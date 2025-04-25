@@ -1,4 +1,5 @@
 training-data\19
 training-data\19green
+training-data\19shell
 training-data\9
-Epoch: 250 Loss: 0.0065371764 Acc: 0.9979686292
+Epoch: 65 Loss: 0.0300074651 Acc: 0.9918159175

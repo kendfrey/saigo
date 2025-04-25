@@ -692,12 +692,16 @@ impl AppState {
         );
 
         fn random_color(rng: &mut StdRng) -> Rgba<u8> {
-            Rgba([
-                rng.random_range(0..=255),
-                rng.random_range(0..=255),
-                rng.random_range(0..=255),
-                255,
-            ])
+            if rng.random_bool(0.1) {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([
+                    rng.random_range(0..=255),
+                    rng.random_range(0..=255),
+                    rng.random_range(0..=255),
+                    255,
+                ])
+            }
         }
     }
 

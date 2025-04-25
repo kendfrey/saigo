@@ -80,7 +80,7 @@ fn main() {
 
     let mut opt = nn::Sgd::default().build(&vs, lr).unwrap();
     opt.set_momentum(0.9);
-    opt.set_weight_decay(0.0001);
+    opt.set_weight_decay(0.001);
 
     let mut status = String::new();
     let mut epoch = 0;
