@@ -1,3 +1,4 @@
 /target
+/dist
 /training-data
 /.vscode/launch.json
