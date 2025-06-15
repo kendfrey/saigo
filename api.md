@@ -2,6 +2,8 @@
 
 Saigo's API has two main parts: the WebSocket API and the HTTP API. The WebSocket API is primarily used for streams of commands or events during gameplay, while the HTTP API is request/response based and is primarily used for configuration. Third-party clients will typically only use the WebSocket API.
 
+*Saigo is currently in beta and the API is not stable. New releases may not be backwards compatible.*
+
 WebSocket endpoints are prefixed with `/ws`, while HTTP endpoints are prefixed with `/api`.
 
 Unless otherwise specified, messages are in JSON format.

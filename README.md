@@ -19,6 +19,8 @@ Saigo (佐為碁) is a program which adds smart capabilities to a physical Go bo
 
 Saigo lets you play Go on a real life board, even when you have no one else to play with. Instead of clicking on a screen, you can place stones on the board and have the camera keep track of the moves for you. When you place a move on the board, it will send the move to your opponent. When your opponent makes a move, the projector will highlight the move on the board until you place the stone in its place.
 
+See it in action: https://youtu.be/CoRoXXbmu1w
+
 Saigo might be for you if:
 - You have a nice Go set but you don't often have anyone to play over the board with
 - You prefer the atmosphere of playing on a real board instead of on a screen
